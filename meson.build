@@ -1,5 +1,5 @@
 project('mpv',
-        'c',
+        ['c', 'cpp'],
         license: ['GPL2+', 'LGPL2.1+'],
         version: files('./MPV_VERSION'),
         meson_version: '>=1.3.0',
@@ -972,8 +972,7 @@ if features['sdl2-video']
     sources += files('video/out/vo_sdl.c')
 endif
 
-shaderc = dependency('shaderc', required:
-    get_option('shaderc').require(features['win32-desktop']))
+shaderc = dependency('shaderc', required: get_option('shaderc'))
 features += {'shaderc': shaderc.found()}
 if features['shaderc']
     dependencies += shaderc
@@ -992,21 +991,22 @@ if features['posix']
     features += {'posix-shm': cc.has_function('shm_open', prefix: '#include <sys/mman.h>')}
 endif
 
-spirv_cross = dependency('spirv-cross-c-shared', required:
-    get_option('spirv-cross').require(features['win32-desktop']))
+spirv_cross = dependency('spirv-cross-c', required:
+    get_option('spirv-cross'))
 features += {'spirv-cross': spirv_cross.found()}
 if features['spirv-cross']
     dependencies += spirv_cross
 endif
 
 d3d11 = get_option('d3d11').require(
-    features['win32-desktop'] and features['shaderc'] and features['spirv-cross'],
-    error_message: 'Either is not a win32 desktop or shaderc nor spirv-cross were found!',
+    features['shaderc'] and features['spirv-cross'],
+    error_message: 'Either is not a win32 desktop or shaderc nor spirv-cross were #found!',
 )
 features += {'d3d11': d3d11.allowed()}
 if features['d3d11']
     sources += files('video/out/d3d11/context.c',
-                     'video/out/d3d11/ra_d3d11.c')
+                     'video/out/d3d11/ra_d3d11.c',
+                     'video/out/d3d11/libmpv_d3d11.c')
     features += {'dxgi-debug-d3d11': cc.has_header_symbol('d3d11sdklayers.h', 'DXGI_DEBUG_D3D11')}
 endif
 
@@ -1754,10 +1754,16 @@ major = client_h_define.split('|')[0].split('<<')[0].strip('() ')
 minor = client_h_define.split('|')[1].strip('() ')
 client_api_version = major + '.' + minor + '.0'
 
+#TODO
+link_args = []
+link_args += cc.get_supported_link_arguments(['-Wl,-Bsymbolic'])
+link_args += ['-static-libstdc++']
+link_args += ['-Wl,-pdb=', '-lssl', '-lcrypto', '-ld3dcompiler_47','-ld3d11','-ldxgi']
+
 libmpv = library('mpv', sources, dependencies: dependencies, gnu_symbol_visibility: 'hidden',
-                 link_args: cc.get_supported_link_arguments(['-Wl,-Bsymbolic']),
+                 link_args: link_args,
                  version: client_api_version, install: get_option('libmpv'),
-                 build_by_default: get_option('libmpv'))
+                 build_by_default: get_option('libmpv'), link_language : 'cpp')
 
 
 if get_option('libmpv')
@@ -1767,6 +1773,10 @@ if get_option('libmpv')
 
     headers = ['libmpv/client.h', 'libmpv/render.h',
                'libmpv/render_gl.h', 'libmpv/stream_cb.h']
+
+ if features['d3d11']
+    headers += 'libmpv/render_dxgi.h'
+ endif
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv
