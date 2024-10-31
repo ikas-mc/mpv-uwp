@@ -2079,19 +2079,24 @@ static void timer_start(struct ra *ra, ra_timer *ratimer)
 
     // Latch the last result of this ra_timer (returned by timer_stop)
     timer->result = timer_get_result(ra, ratimer);
-
+#if HAVE_UWP
+    // TODO
+#else
     ID3D11DeviceContext_Begin(p->ctx, (ID3D11Asynchronous *)timer->disjoint);
     ID3D11DeviceContext_End(p->ctx, (ID3D11Asynchronous *)timer->ts_start);
+#endif
 }
 
 static uint64_t timer_stop(struct ra *ra, ra_timer *ratimer)
 {
     struct ra_d3d11 *p = ra->priv;
     struct d3d_timer *timer = ratimer;
-
+#if HAVE_UWP
+    // TODO
+#else
     ID3D11DeviceContext_End(p->ctx, (ID3D11Asynchronous *)timer->ts_end);
     ID3D11DeviceContext_End(p->ctx, (ID3D11Asynchronous *)timer->disjoint);
-
+#endif
     return timer->result;
 }
 
