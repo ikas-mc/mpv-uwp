@@ -273,10 +273,22 @@ static int hstat(HANDLE h, struct mp_stat *buf)
 int mp_stat(const char *path, struct mp_stat *buf)
 {
     wchar_t *wpath = mp_from_utf8(NULL, path);
+#if HAVE_UWP
+    DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+    CREATEFILE2_EXTENDED_PARAMETERS createExParams;
+    createExParams.dwSize = sizeof(CREATEFILE2_EXTENDED_PARAMETERS);
+    createExParams.dwFileAttributes = flags & 0xFFFF;
+    createExParams.dwFileFlags = flags & 0xFFF00000;
+    createExParams.dwSecurityQosFlags = flags & 0x000F0000;
+    createExParams.lpSecurityAttributes = NULL;
+    createExParams.hTemplateFile = NULL;
+    HANDLE h = CreateFile2(wpath, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, OPEN_EXISTING, &createExParams);
+#else
     HANDLE h = CreateFileW(wpath, FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | SECURITY_SQOS_PRESENT |
         SECURITY_IDENTIFICATION, NULL);
+#endif
     talloc_free(wpath);
     if (h == INVALID_HANDLE_VALUE) {
         set_errno_from_lasterror();
@@ -317,6 +329,7 @@ size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
     if (!size || !count)
         return 0;
 
+#if !HAVE_UWP
     HANDLE wstream = get_handle(stream);
     if (mp_check_console(wstream)) {
         unsigned char *start = (unsigned char *)buffer;
@@ -328,6 +341,7 @@ size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
         }
         return c;
     }
+#endif    
 
 #undef fwrite
     return fwrite(buffer, size, count, stream);
@@ -454,7 +468,18 @@ int mp_open(const char *filename, int oflag, ...)
 
     // Open the Windows file handle
     wchar_t *wpath = mp_from_utf8(NULL, filename);
+#if HAVE_UWP
+    CREATEFILE2_EXTENDED_PARAMETERS createExParams;
+    createExParams.dwSize = sizeof(CREATEFILE2_EXTENDED_PARAMETERS);
+    createExParams.dwFileAttributes = flags & 0xFFFF;
+    createExParams.dwFileFlags = flags & 0xFFF00000;
+    createExParams.dwSecurityQosFlags = flags & 0x000F0000;
+    createExParams.lpSecurityAttributes = NULL;
+    createExParams.hTemplateFile = NULL;
+    HANDLE h = CreateFile2(wpath, access, share, disposition, &createExParams);
+#else
     HANDLE h = CreateFileW(wpath, access, share, NULL, disposition, flags, NULL);
+#endif
     talloc_free(wpath);
     if (h == INVALID_HANDLE_VALUE) {
         set_errno_from_lasterror();
@@ -744,7 +769,9 @@ void *mp_dlopen(const char *filename, int flag)
     HMODULE lib = NULL;
     void *ta_ctx = talloc_new(NULL);
     wchar_t *wfilename = mp_from_utf8(ta_ctx, filename);
-
+#if HAVE_UWP
+    lib = LoadPackagedLibrary(wfilename, 0);
+#else
     DWORD len = GetFullPathNameW(wfilename, 0, NULL, NULL);
     if (!len)
         goto err;
@@ -753,8 +780,8 @@ void *mp_dlopen(const char *filename, int flag)
     len = GetFullPathNameW(wfilename, len, path, NULL);
     if (!len)
         goto err;
-
-    lib = LoadLibraryW(path);
+    lib = LoadLibraryW_2(path);
+#endif
 
 err:
     talloc_free(ta_ctx);

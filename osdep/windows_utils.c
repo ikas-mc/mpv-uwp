@@ -167,6 +167,9 @@ char *mp_HRESULT_to_str_buf(char *buf, size_t buf_size, HRESULT hr)
 bool mp_w32_create_anon_pipe(HANDLE *server, HANDLE *client,
                              struct w32_create_anon_pipe_opts *opts)
 {
+#if HAVE_UWP
+    return false;
+#else
     static atomic_ulong counter = 0;
 
     // Generate pipe name
@@ -229,10 +232,14 @@ bool mp_w32_create_anon_pipe(HANDLE *server, HANDLE *client,
 error:
     *server = *client = INVALID_HANDLE_VALUE;
     return false;
+#endif
 }
 
 wchar_t *mp_w32_get_shell_link_target(wchar_t *path)
 {
+#if HAVE_UWP
+    return L"";
+#else
     IShellLink *psl = NULL;
     IPersistFile *ppf = NULL;
     wchar_t *buf = talloc_array(NULL, wchar_t, MAX_PATH + 1);
@@ -248,4 +255,5 @@ wchar_t *mp_w32_get_shell_link_target(wchar_t *path)
     SAFE_RELEASE(psl);
     SAFE_RELEASE(ppf);
     return buf;
+#endif
 }

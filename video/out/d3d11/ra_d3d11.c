@@ -2289,7 +2289,7 @@ static struct dll_version get_dll_version(HMODULE dll)
 {
     void *ctx = talloc_new(NULL);
     struct dll_version ret = { 0 };
-
+#if !HAVE_UWP
     HRSRC rsrc = FindResourceW(dll, MAKEINTRESOURCEW(VS_VERSION_INFO),
                                VS_FILE_INFO);
     if (!rsrc)
@@ -2314,7 +2314,7 @@ static struct dll_version get_dll_version(HMODULE dll)
     ret.minor = LOWORD(ffi->dwFileVersionMS);
     ret.build = HIWORD(ffi->dwFileVersionLS);
     ret.revision = LOWORD(ffi->dwFileVersionLS);
-
+#endif
 done:
     talloc_free(ctx);
     return ret;
@@ -2323,6 +2323,7 @@ done:
 static bool load_d3d_compiler(struct ra *ra)
 {
     struct ra_d3d11 *p = ra->priv;
+#if !HAVE_UWP
     HMODULE d3dcompiler = NULL;
 
     // Try the inbox D3DCompiler first (Windows 8.1 and up)
@@ -2346,6 +2347,12 @@ static bool load_d3d_compiler(struct ra *ra)
     p->d3d_compiler_ver = get_dll_version(d3dcompiler);
 
     p->D3DCompile = (pD3DCompile)GetProcAddress(d3dcompiler, "D3DCompile");
+#else
+    struct dll_version ret = { 0 };
+    p->d3d_compiler_ver =ret;
+    p->D3DCompile = D3DCompile;
+#endif
+
     if (!p->D3DCompile)
         return false;
     return true;

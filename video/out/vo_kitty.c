@@ -362,7 +362,9 @@ static int preinit(struct vo *vo)
 #endif
 
     write_str(TERM_ESC_HIDE_CURSOR);
+#if !HAVE_UWP
     terminal_set_mouse_input(true);
+#endif
     if (p->opts.alt_screen)
         write_str(TERM_ESC_ALT_SCREEN);
 
@@ -390,8 +392,9 @@ static void uninit(struct vo *vo)
 #endif
 
     write_str(TERM_ESC_RESTORE_CURSOR);
+#if !HAVE_UWP
     terminal_set_mouse_input(false);
-
+#endif
     if (p->opts.alt_screen) {
         write_str(TERM_ESC_NORMAL_SCREEN);
     } else {

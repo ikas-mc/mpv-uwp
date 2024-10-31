@@ -1038,7 +1038,12 @@ retry:
         MP_VERBOSE(ao, "Trying UWP wrapper.\n");
 
         HRESULT (*wuCreateDefaultAudioRenderer)(IUnknown **res) = NULL;
-        HANDLE lib = LoadLibraryW(L"wasapiuwp2.dll");
+#if HAVE_UWP
+        HANDLE lib = LoadPackagedLibrary(L"wasapiuwp2.dll", 0);
+#else
+        HANDLE lib = LoadLibrary(L"wasapiuwp2.dll");
+#endif
+
         if (!lib) {
             MP_ERR(ao, "Wrapper not found: %d\n", (int)GetLastError());
             return false;

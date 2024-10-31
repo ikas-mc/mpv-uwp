@@ -157,7 +157,10 @@ static bool resize(struct ra_ctx *ctx)
 
 static bool d3d11_reconfig(struct ra_ctx *ctx)
 {
+#if HAVE_UWP
+#else
     vo_w32_config(ctx->vo);
+#endif
     return resize(ctx);
 }
 
@@ -380,7 +383,7 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
     struct priv *p = ctx->priv;
     int ret = -1;
     bool fullscreen_switch_needed = false;
-
+#if !HAVE_UWP
     switch (request) {
     case VOCTRL_VO_OPTS_CHANGED: {
         void *changed_option;
@@ -424,6 +427,7 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
         if (!resize(ctx))
             return VO_ERROR;
     }
+#endif
     return ret;
 }
 
@@ -437,7 +441,9 @@ static void d3d11_uninit(struct ra_ctx *ctx)
     if (ctx->ra)
         ra_tex_free(ctx->ra, &p->backbuffer);
     SAFE_RELEASE(p->swapchain);
+#if !HAVE_UWP
     vo_w32_uninit(ctx->vo);
+#endif
     SAFE_RELEASE(p->device);
 
     // Destroy the RA last to prevent objects we hold from showing up in D3D's
@@ -488,12 +494,13 @@ static bool d3d11_init(struct ra_ctx *ctx)
     ctx->ra = ra_d3d11_create(p->device, ctx->log, ctx->spirv);
     if (!ctx->ra)
         goto error;
-
+#if !HAVE_UWP
     if (!vo_w32_init(ctx->vo))
         goto error;
-
+  
     if (ctx->opts.want_alpha)
         vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
+
 
     UINT usage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
     if (ID3D11Device_GetFeatureLevel(p->device) >= D3D_FEATURE_LEVEL_11_0 &&
@@ -519,6 +526,7 @@ static bool d3d11_init(struct ra_ctx *ctx)
         goto error;
 
     return true;
+#endif
 
 error:
     d3d11_uninit(ctx);
@@ -527,7 +535,9 @@ error:
 
 static void d3d11_update_render_opts(struct ra_ctx *ctx)
 {
+#if !HAVE_UWP
     vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
+#endif  
 }
 
 IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)

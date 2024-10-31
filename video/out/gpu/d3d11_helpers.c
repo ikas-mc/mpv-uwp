@@ -40,6 +40,15 @@ static PFN_CREATE_DXGI_FACTORY pCreateDXGIFactory1 = NULL;
 static PFN_DXGI_GET_DEBUG_INTERFACE pDXGIGetDebugInterface = NULL;
 static void d3d11_load(void)
 {
+#if HAVE_UWP
+    pD3D11CreateDevice = D3D11CreateDevice;
+    pCreateDXGIFactory1 = CreateDXGIFactory1;
+    HMODULE dxgidebuglib = LoadPackagedLibrary(L"dxgidebug.dll", 0);
+    if (dxgidebuglib) {
+        pDXGIGetDebugInterface = (PFN_DXGI_GET_DEBUG_INTERFACE)
+            GetProcAddress(dxgidebuglib, "DXGIGetDebugInterface");
+    }
+#else
     HMODULE d3d11   = LoadLibraryW(L"d3d11.dll");
     HMODULE dxgilib = LoadLibraryW(L"dxgi.dll");
     HMODULE dxgidebuglib = LoadLibraryW(L"dxgidebug.dll");
@@ -54,6 +63,7 @@ static void d3d11_load(void)
         pDXGIGetDebugInterface = (PFN_DXGI_GET_DEBUG_INTERFACE)
             GetProcAddress(dxgidebuglib, "DXGIGetDebugInterface");
     }
+#endif
 }
 
 static bool load_d3d11_functions(struct mp_log *log)
@@ -653,6 +663,9 @@ static HRESULT create_swapchain_1_2(ID3D11Device *dev, IDXGIFactory2 *factory,
     };
 
     if (flip) {
+#if HAVE_UWP
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+#else
         // UNORDERED_ACCESS with FLIP_SEQUENTIAL seems to be buggy with
         // Windows 7 drivers
         if ((desc.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS) &&
@@ -667,7 +680,8 @@ static HRESULT create_swapchain_1_2(ID3D11Device *dev, IDXGIFactory2 *factory,
             desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         } else {
             desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-        }
+        }     
+#endif
         desc.BufferCount = opts->length;
     } else {
         desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
@@ -841,6 +855,8 @@ static bool configure_created_swapchain(struct mp_log *log,
         return false;
     }
 
+#if HAVE_UWP
+#else
     if (!IsWindows10OrGreater()) {
         // On older than Windows 10, query_output_format_and_colorspace
         // will not change probed_colorspace, and even if a user sets
@@ -856,6 +872,7 @@ static bool configure_created_swapchain(struct mp_log *log,
 
         return true;
     }
+#endif
 
     if (!mp_csp_mapped) {
         mp_warn(log, "Color space %s (%d) does not have an mpv color space "

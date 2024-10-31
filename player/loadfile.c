@@ -528,6 +528,9 @@ static bool append_lang(size_t *nb, char ***out, char *in)
 
 static char **add_os_langs(void)
 {
+#if HAVE_UWP
+    return NULL;
+#else
     size_t nb = 0;
     char **out = NULL;
     char **autos = mp_get_user_langs();
@@ -539,6 +542,7 @@ static char **add_os_langs(void)
 cleanup:
     talloc_free(autos);
     return out;
+#endif
 }
 
 static char **process_langs(char **in)
