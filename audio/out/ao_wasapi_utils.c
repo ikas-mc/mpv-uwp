@@ -208,7 +208,10 @@ static void set_waveformat(WAVEFORMATEXTENSIBLE *wformat,
         // format match when there are more channels. Remix to standard layout.
         // Also if input channel mask has channels outside 32-bits override it
         // and hope for the best...
-        wformat->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
+#if !HAVE_UWP
+        //TODO 
+        wformat->dwChannelMask = SPEAKER_7POINT1_SURROUND;
+#endif
         wformat->Format.nChannels = 8;
     }
 
@@ -235,7 +238,6 @@ static void change_waveformat_channels(WAVEFORMATEXTENSIBLE *wformat,
 static struct wasapi_sample_fmt format_from_waveformat(WAVEFORMATEX *wf)
 {
     struct wasapi_sample_fmt res = {0};
-
     for (int n = 0; wasapi_formats[n].mp_format; n++) {
         const struct wasapi_sample_fmt *fmt = &wasapi_formats[n];
         int valid_bits = 0;
@@ -648,6 +650,7 @@ exit_label:
 
 static void init_volume_control(struct wasapi_state *state)
 {
+#if !HAVE_UWP
     HRESULT hr;
     if (state->share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE) {
         MP_DBG(state, "Activating pEndpointVolume interface\n");
@@ -669,12 +672,14 @@ static void init_volume_control(struct wasapi_state *state)
         EXIT_ON_ERROR(hr);
     }
     return;
+
 exit_label:
     state->vol_hw_support = 0;
     SAFE_RELEASE(state->pEndpointVolume);
     SAFE_RELEASE(state->pAudioVolume);
     MP_WARN(state, "Error setting up volume control: %s\n",
             mp_HRESULT_to_str(hr));
+#endif
 }
 
 static HRESULT fix_format(struct ao *ao, bool align_hack)
@@ -771,6 +776,7 @@ exit_label:
     return hr;
 }
 
+#if !HAVE_UWP
 struct device_desc {
     LPWSTR deviceID;
     char *id;
@@ -780,6 +786,7 @@ struct device_desc {
 static char* get_device_name(struct mp_log *l, void *talloc_ctx, IMMDevice *pDevice)
 {
     char *namestr = NULL;
+
     IPropertyStore *pProps = NULL;
     PROPVARIANT devname;
     PropVariantInit(&devname);
@@ -821,6 +828,7 @@ static struct device_desc *get_device_desc(struct mp_log *l, IMMDevice *pDevice)
     talloc_free(full_id);
 
     d->name = get_device_name(l, d, pDevice);
+
     return d;
 }
 
@@ -1009,6 +1017,11 @@ exit_label:
     destroy_enumerator(enumerator);
     return deviceID;
 }
+#else
+void wasapi_list_devs (struct ao* ao, struct ao_device_list* list)
+{
+}
+#endif // !HAVE_UWP
 
 bool wasapi_thread_init(struct ao *ao)
 {
@@ -1022,6 +1035,7 @@ bool wasapi_thread_init(struct ao *ao)
 
 retry:
     if (state->deviceID) {
+#if !HAVE_UWP
         if (!load_device(ao->log, &state->pDevice, state->deviceID))
             return false;
 
@@ -1034,6 +1048,7 @@ retry:
                      mp_HRESULT_to_str(hr));
             return false;
         }
+#endif
     } else {
         MP_VERBOSE(ao, "Trying UWP wrapper.\n");
 
@@ -1129,8 +1144,9 @@ void wasapi_thread_uninit(struct ao *ao)
     SAFE_RELEASE(state->pEndpointVolume);
     SAFE_RELEASE(state->pSessionControl);
     SAFE_RELEASE(state->pAudioClient);
-    SAFE_RELEASE(state->pDevice);
 #if !HAVE_UWP
+    SAFE_RELEASE(state->pDevice);
+
     SAFE_DESTROY(state->hTask, AvRevertMmThreadCharacteristics(state->hTask));
 #endif
     MP_DBG(ao, "Thread uninit done\n");

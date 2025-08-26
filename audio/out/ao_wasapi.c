@@ -290,9 +290,9 @@ static void uninit(struct ao *ao)
     SAFE_DESTROY(state->hWake,       CloseHandle(state->hWake));
     SAFE_DESTROY(state->hUserWake,   CloseHandle(state->hUserWake));
     SAFE_DESTROY(state->hAudioThread,CloseHandle(state->hAudioThread));
-
+#if !HAVE_UWP
     wasapi_change_uninit(ao);
-
+#endif
     talloc_free(state->deviceID);
 
     CoUninitialize();
@@ -315,10 +315,11 @@ static int init(struct ao *ao)
         uninit(ao);
         return -1;
     }
-#endif
+
 
     if (state->deviceID)
         wasapi_change_init(ao, false);
+#endif
 
     state->hInitDone = CreateEventW(NULL, FALSE, FALSE, NULL);
     state->hWake     = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -501,17 +502,21 @@ static bool audio_set_pause(struct ao *ao, bool paused)
 
 static void hotplug_uninit(struct ao *ao)
 {
+#if !HAVE_UWP
     MP_DBG(ao, "Hotplug uninit\n");
     wasapi_change_uninit(ao);
     CoUninitialize();
+#endif
 }
 
 static int hotplug_init(struct ao *ao)
 {
+#if !HAVE_UWP
     MP_DBG(ao, "Hotplug init\n");
     struct wasapi_state *state = ao->priv;
     state->log = ao->log;
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
     HRESULT hr = wasapi_change_init(ao, true);
     EXIT_ON_ERROR(hr);
 
@@ -519,7 +524,12 @@ static int hotplug_init(struct ao *ao)
     exit_label:
     MP_FATAL(state, "Error setting up audio hotplug: %s\n", mp_HRESULT_to_str(hr));
     hotplug_uninit(ao);
+
     return -1;
+#else
+    return 0;
+#endif
+
 }
 
 #define OPT_BASE_STRUCT struct wasapi_state

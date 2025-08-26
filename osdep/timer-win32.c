@@ -27,17 +27,17 @@
 #include "config.h"
 
 static LARGE_INTEGER perf_freq;
-
+#if !HAVE_UWP
 static int64_t hires_max = MP_TIME_MS_TO_NS(50);
 static int64_t hires_res = MP_TIME_MS_TO_NS(1);
 
 // NtSetTimerResolution allows setting the timer resolution to less than 1 ms.
 // Resolutions are specified in 100-ns units.
 // If Set is TRUE, set the RequestedResolution. Otherwise, return to the previous resolution.
-NTSTATUS NTAPI NtSetTimerResolution(ULONG RequestedResolution, BOOLEAN Set, PULONG ActualResolution);
+ NTSTATUS NTAPI NtSetTimerResolution(ULONG RequestedResolution, BOOLEAN Set, PULONG ActualResolution);
 // Acquire the valid timer resolution range.
-NTSTATUS NTAPI NtQueryTimerResolution(PULONG MinimumResolution, PULONG MaximumResolution, PULONG ActualResolution);
-
+ NTSTATUS NTAPI NtQueryTimerResolution(PULONG MinimumResolution, PULONG MaximumResolution, PULONG ActualResolution);
+#endif
 int64_t mp_start_hires_timers(int64_t wait_ns)
 {
 #if !HAVE_UWP
@@ -85,8 +85,13 @@ void mp_sleep_ns(int64_t ns)
     if (!SetWaitableTimer(timer, &time, 0, NULL, NULL, 0))
         goto end;
 
+#if HAVE_UWP
+    if (WaitForSingleObject (timer, INFINITE) != 0x00000000L)
+        goto end;
+#else
     if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0)
         goto end;
+#endif
 
 end:
     if (timer)

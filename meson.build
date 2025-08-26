@@ -1,5 +1,5 @@
 project('mpv',
-        ['c', 'cpp'],
+        'c',
         license: ['GPL2+', 'LGPL2.1+'],
         version: files('./MPV_VERSION'),
         meson_version: '>=1.3.0',
@@ -991,7 +991,7 @@ if features['posix']
     features += {'posix-shm': cc.has_function('shm_open', prefix: '#include <sys/mman.h>')}
 endif
 
-spirv_cross = dependency('spirv-cross-c', required:
+spirv_cross = dependency('spirv-cross-c-shared', required:
     get_option('spirv-cross'))
 features += {'spirv-cross': spirv_cross.found()}
 if features['spirv-cross']
@@ -1754,17 +1754,10 @@ major = client_h_define.split('|')[0].split('<<')[0].strip('() ')
 minor = client_h_define.split('|')[1].strip('() ')
 client_api_version = major + '.' + minor + '.0'
 
-#TODO
-link_args = []
-link_args += cc.get_supported_link_arguments(['-Wl,-Bsymbolic'])
-link_args += ['-static-libstdc++']
-link_args += ['-Wl,-pdb=', '-lssl', '-lcrypto', '-ld3dcompiler_47','-ld3d11','-ldxgi']
-
 libmpv = library('mpv', sources, dependencies: dependencies, gnu_symbol_visibility: 'hidden',
-                 link_args: link_args,
+                 link_args: cc.get_supported_link_arguments(['-Wl,-Bsymbolic']),
                  version: client_api_version, install: get_option('libmpv'),
-                 build_by_default: get_option('libmpv'), link_language : 'cpp')
-
+                 build_by_default: get_option('libmpv'))
 
 if get_option('libmpv')
     pkg = import('pkgconfig')

@@ -25,11 +25,14 @@
 #include <d3d9.h>
 #include <dxgi1_2.h>
 #include <ole2.h>
-#include <shobjidl.h>
-
 #include "common/common.h"
+#if !HAVE_UWP
+#include <shobjidl.h>
+#endif
+
 #include "windows_utils.h"
 #include "mpv_talloc.h"
+
 
 char *mp_GUID_to_str_buf(char *buf, size_t buf_size, const GUID *guid)
 {
@@ -55,6 +58,7 @@ static char *hresult_to_str(const HRESULT hr)
     E(E_HANDLE)
     E(E_NOTIMPL)
     E(E_INVALIDARG)
+#if !HAVE_UWP
     E(E_PROP_ID_UNSUPPORTED)
     E(E_NOINTERFACE)
     E(REGDB_E_IIDNOTREG)
@@ -131,6 +135,7 @@ static char *hresult_to_str(const HRESULT hr)
     E(DXGI_ERROR_INVALID_CALL)
     E(DXGI_ERROR_WAS_STILL_DRAWING)
     E(DXGI_STATUS_OCCLUDED)
+#endif
     default:
         return "<Unknown>";
     }

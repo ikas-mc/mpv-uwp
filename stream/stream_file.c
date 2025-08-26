@@ -235,7 +235,7 @@ static bool check_stream_network(int fd)
     return false;
 
 }
-#elif defined(_WIN32)
+#elif defined(_WIN32) && !HAVE_UWP
 static bool check_stream_network(int fd)
 {
     NTSTATUS (NTAPI *pNtQueryVolumeInformationFile)(HANDLE,

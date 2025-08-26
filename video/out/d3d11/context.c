@@ -383,7 +383,7 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
     struct priv *p = ctx->priv;
     int ret = -1;
     bool fullscreen_switch_needed = false;
-#if !HAVE_UWP
+
     switch (request) {
     case VOCTRL_VO_OPTS_CHANGED: {
         void *changed_option;
@@ -413,8 +413,9 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
         fullscreen_switch_needed = false;
     }
 
+#if !HAVE_UWP
     ret = vo_w32_control(ctx->vo, events, request, arg);
-
+#endif
     // if entering full screen, handle d3d11 after general windowing stuff
     if (fullscreen_switch_needed && p->vo_opts->fullscreen) {
         if (!d3d11_set_fullscreen(ctx))
@@ -427,7 +428,7 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
         if (!resize(ctx))
             return VO_ERROR;
     }
-#endif
+
     return ret;
 }
 

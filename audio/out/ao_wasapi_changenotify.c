@@ -20,7 +20,7 @@
 #include <wchar.h>
 
 #include "ao_wasapi.h"
-
+#if !HAVE_UWP
 static HRESULT STDMETHODCALLTYPE sIMMNotificationClient_QueryInterface(
     IMMNotificationClient* This, REFIID riid, void **ppvObject)
 {
@@ -249,3 +249,4 @@ void wasapi_change_uninit(struct ao *ao)
 
     SAFE_RELEASE(change->pEnumerator);
 }
+#endif

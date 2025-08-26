@@ -312,6 +312,7 @@ int mp_fstat(int fd, struct mp_stat *buf)
     return hstat(h, buf);
 }
 
+#if !HAVE_UWP
 static inline HANDLE get_handle(FILE *stream)
 {
     HANDLE wstream = INVALID_HANDLE_VALUE;
@@ -322,6 +323,7 @@ static inline HANDLE get_handle(FILE *stream)
     }
     return wstream;
 }
+#endif
 
 size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
                  FILE *restrict stream)
@@ -678,14 +680,15 @@ char *mp_win32_getcwd(char *buf, size_t size)
 }
 
 static char **utf8_environ;
+#if !HAVE_UWP
 static void *utf8_environ_ctx;
-
 static void free_env(void)
 {
     talloc_free(utf8_environ_ctx);
     utf8_environ_ctx = NULL;
     utf8_environ = NULL;
 }
+#endif
 
 // Note: UNIX getenv() returns static strings, and we try to do the same. Since
 // using putenv() is not multithreading safe, we don't expect env vars to change
@@ -782,8 +785,8 @@ void *mp_dlopen(const char *filename, int flag)
         goto err;
     lib = LoadLibraryW_2(path);
 #endif
-
 err:
+
     talloc_free(ta_ctx);
     mp_dl_result.errcode = GetLastError();
     return (void *)lib;

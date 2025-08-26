@@ -35,6 +35,7 @@
 #include "internal.h"
 #include "ao.h"
 
+#if !HAVE_UWP
 typedef struct change_notify {
     IMMNotificationClient client; // this must be first in the structure!
     IMMDeviceEnumerator *pEnumerator; // object where client is registered
@@ -45,7 +46,7 @@ typedef struct change_notify {
 
 HRESULT wasapi_change_init(struct ao* ao, bool is_hotplug);
 void wasapi_change_uninit(struct ao* ao);
-
+#endif
 enum wasapi_thread_state {
     WASAPI_THREAD_FEED = 0,
     WASAPI_THREAD_RESUME,
@@ -98,8 +99,9 @@ typedef struct wasapi_state {
     AUDCLNT_SHAREMODE share_mode; // AUDCLNT_SHAREMODE_EXCLUSIVE / SHARED
     UINT32 bufferFrameCount;      // number of frames in buffer
     struct ao_convert_fmt convert_format;
-
+#if !HAVE_UWP
     change_notify change;
+#endif     
 } wasapi_state;
 
 char *mp_PKEY_to_str_buf(char *buf, size_t buf_size, const PROPERTYKEY *pkey);
