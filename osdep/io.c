@@ -913,15 +913,18 @@ void freelocale(locale_t locobj)
 
 int mp_make_cloexec_pipe(int pipes[2])
 {
+#if !HAVE_UWP
     if (_pipe(pipes, MP_PIPE_BUF_SIZE, _O_BINARY | _O_NOINHERIT) != 0) {
         pipes[0] = pipes[1] = -1;
         return -1;
     }
+#endif    
     return 0;
 }
 
 int mp_make_wakeup_pipe(int pipes[2])
 {
+#if !HAVE_UWP
     static atomic_ulong pipe_id = 0;
 
     pipes[0] = pipes[1] = -1;
@@ -980,12 +983,14 @@ error:
         } else if (handles[i] != INVALID_HANDLE_VALUE) {
             CloseHandle(handles[i]);
         }
-    } 
+    }
+#endif    
     return -1;
 }
 
 void mp_flush_wakeup_pipe(int pipe_end)
 {
+#if !HAVE_UWP
     char buf[100];
     OVERLAPPED operation = {};
     HANDLE handle = (HANDLE)_get_osfhandle(pipe_end);
@@ -994,7 +999,8 @@ void mp_flush_wakeup_pipe(int pipe_end)
     if (!ReadFile(handle, buf, sizeof(buf), NULL, &operation)) {
         if (GetLastError() != ERROR_IO_PENDING || !CancelIoEx(handle, &operation))
             set_errno_from_lasterror();
-    }    
+    }
+#endif    
 }
 
 #endif // __MINGW32__

@@ -1,6 +1,6 @@
 #include "common/msg.h"
 #include "ra_d3d11.h"
-#include "libmpv/render_dxgi.h"
+#include "include/mpv/render_dxgi.h"
 #include "video/out/gpu/libmpv_gpu.h"
 #include "osdep/windows_utils.h"
 

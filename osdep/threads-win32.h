@@ -142,6 +142,7 @@ static inline int mp_thread_join(mp_thread thread)
 {
     DWORD ret = WaitForSingleObject(thread, INFINITE);
 #if HAVE_UWP
+    //https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
     if (ret != 0x00000000L)
         return ret == 0x00000080L ? EINVAL : EDEADLK;
 #else

@@ -63,14 +63,15 @@ typedef HRESULT(WINAPI *PFN_CREATE_DXGI_FACTORY)(REFIID riid, void **ppFactory);
 	DECLARE_DLL_FUNCTION(CreateDXGIFactory1, L"dxgi.dll", PFN_CREATE_DXGI_FACTORY)
 	DECLARE_DLL_FUNCTION(DXGIGetDebugInterface, L"dxgidebug.dll", PFN_DXGI_GET_DEBUG_INTERFACE)
 #else
-    static PFN_D3D11_CREATE_DEVICE get_D3D11CreateDevice(){
+    static PFN_D3D11_CREATE_DEVICE get_D3D11CreateDevice(void){
         return D3D11CreateDevice;
     }
-    static PFN_CREATE_DXGI_FACTORY get_CreateDXGIFactory1(){
+    static PFN_CREATE_DXGI_FACTORY get_CreateDXGIFactory1(void){
         return CreateDXGIFactory1;
     }
-    static PFN_DXGI_GET_DEBUG_INTERFACE get_DXGIGetDebugInterface(){
-        return DXGIGetDebugInterface;
+    static PFN_DXGI_GET_DEBUG_INTERFACE get_DXGIGetDebugInterface(void){
+        //TODO
+        return NULL;
     }
 #endif
 
@@ -1010,6 +1011,7 @@ void mp_dxgi_factory_uninit(struct mp_dxgi_factory_ctx *ctx)
     SAFE_RELEASE(ctx->last_matched_output);
 }
 
+#if !HAVE_UWP
 bool mp_dxgi_output_desc_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
                                    HWND hwnd, DXGI_OUTPUT_DESC1 *desc)
 {
@@ -1070,18 +1072,47 @@ done:
     return result;
 }
 
+#else
+//TODO
+static bool mp_get_dxgi_output_desc(IDXGISwapChain *swapchain, DXGI_OUTPUT_DESC1 *desc)
+{
+    bool ret = false;
+    IDXGIOutput *output = NULL;
+    IDXGIOutput6 *output6 = NULL;
+
+    if (FAILED(IDXGISwapChain_GetContainingOutput(swapchain, &output)))
+        goto done;
+
+    if (FAILED(IDXGIOutput_QueryInterface(output, &IID_IDXGIOutput6, (void**)&output6)))
+        goto done;
+
+    ret = SUCCEEDED(IDXGIOutput6_GetDesc1(output6, desc));
+
+done:
+    SAFE_RELEASE(output);
+    SAFE_RELEASE(output6);
+    return ret;
+}
+#endif
+
 bool mp_dxgi_output_desc_from_swapchain(struct mp_dxgi_factory_ctx *ctx,
                                         IDXGISwapChain *swapchain,
                                         DXGI_OUTPUT_DESC1 *desc)
 {
+#if !HAVE_UWP
     DXGI_SWAP_CHAIN_DESC swap_desc;
     // IDXGISwapChain::GetContainingOutput is not used because DXGI cache the
     // output params and doesn't react to the changes. Instead go through the
     // HWND and create a fresh DXGI factory.
     if (SUCCEEDED(IDXGISwapChain_GetDesc(swapchain, &swap_desc)))
         return mp_dxgi_output_desc_from_hwnd(ctx, swap_desc.OutputWindow, desc);
+#else
+    return mp_get_dxgi_output_desc(swapchain, desc);
+#endif
     return false;
 }
+
+
 
 struct pl_color_space mp_dxgi_desc_to_color_space(const DXGI_OUTPUT_DESC1 *desc)
 {

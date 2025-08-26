@@ -205,11 +205,14 @@ static int d3d11_color_depth(struct ra_swapchain *sw)
 static struct pl_color_space d3d11_target_color_space(struct ra_swapchain *sw)
 {
     struct priv *p = sw->priv;
-
     DXGI_OUTPUT_DESC1 desc;
+#if !HAVE_UWP    
     if (mp_dxgi_output_desc_from_hwnd(&p->dxgi_ctx, vo_w32_hwnd(sw->ctx->vo), &desc))
         return mp_dxgi_desc_to_color_space(&desc);
-
+#else
+    if (mp_dxgi_output_desc_from_swapchain(NULL, &p->swapchain,  &desc))
+        return mp_dxgi_desc_to_color_space(&desc);
+#endif
     return (struct pl_color_space){0};
 }
 
@@ -471,7 +474,12 @@ static void d3d11_uninit(struct ra_ctx *ctx)
         vo_w32_uninit(ctx->vo);
 #endif
     } else {
+#if !HAVE_UWP
         vo_w32_swapchain(ctx->vo, NULL);
+#else
+        //TODO
+        ctx->vo->display_swapchain = NULL;
+#endif
     }
     SAFE_RELEASE(p->device);
     mp_dxgi_factory_uninit(&p->dxgi_ctx);
@@ -525,14 +533,18 @@ static bool d3d11_init(struct ra_ctx *ctx)
     ctx->ra = ra_d3d11_create(p->device, ctx->log, ctx->spirv);
     if (!ctx->ra)
         goto error;
-#if !HAVE_UWP
+
     ctx->opts.composition = p->opts->output_mode == 1;
+#if !HAVE_UWP
     if (!ctx->opts.composition && !vo_w32_init(ctx->vo))
         goto error;
   
     if (!ctx->opts.composition && ctx->opts.want_alpha)
         vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
-
+#else
+    if (!ctx->opts.composition)
+        goto error;
+#endif
 
     UINT usage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
     if (ID3D11Device_GetFeatureLevel(p->device) >= D3D_FEATURE_LEVEL_11_0 &&
@@ -542,7 +554,11 @@ static bool d3d11_init(struct ra_ctx *ctx)
     }
 
     struct d3d11_swapchain_opts scopts = {
+#if !HAVE_UWP
         .window = ctx->opts.composition ? NULL : vo_w32_hwnd(ctx->vo),
+#else
+        .window = NULL,
+#endif
         .width = ctx->vo->dwidth,
         .height = ctx->vo->dheight,
         .format = p->opts->output_format,
@@ -557,12 +573,16 @@ static bool d3d11_init(struct ra_ctx *ctx)
     if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
         goto error;
 
-    if (ctx->opts.composition)
+    if (ctx->opts.composition){
+#if !HAVE_UWP
         vo_w32_swapchain(ctx->vo, p->swapchain);
+#else
+        //TODO
+        ctx->vo->display_swapchain = p->swapchain;
+#endif    
+    }
 
     return true;
-#endif
-
 error:
     d3d11_uninit(ctx);
     return false;
@@ -571,7 +591,8 @@ error:
 static void d3d11_update_render_opts(struct ra_ctx *ctx)
 {
     if (ctx->opts.composition)
-        return;#if !HAVE_UWP
+        return;
+#if !HAVE_UWP
     vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
 #endif 
 }
