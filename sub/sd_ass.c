@@ -29,9 +29,11 @@
 #include "config.h"
 #include "options/m_config.h"
 #include "options/options.h"
+#include "options/path.h"
 #include "common/common.h"
 #include "common/msg.h"
 #include "demux/demux.h"
+#include "demux/packet_pool.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
 #include "dec_sub.h"
@@ -67,6 +69,34 @@ struct seen_packet {
     double pts;
 };
 
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct mp_sub_filter_opts
+
+const struct m_sub_options mp_sub_filter_opts = {
+    .opts = (const struct m_option[]){
+        {"sdh", OPT_BOOL(sub_filter_SDH)},
+        {"sdh-harder", OPT_BOOL(sub_filter_SDH_harder)},
+        {"sdh-enclosures", OPT_STRINGLIST(sub_filter_SDH_enclosures)},
+        {"regex-enable", OPT_BOOL(rf_enable)},
+        {"regex-plain", OPT_BOOL(rf_plain)},
+        {"regex", OPT_STRINGLIST(rf_items)},
+        {"jsre", OPT_STRINGLIST(jsre_items)},
+        {"regex-warn", OPT_BOOL(rf_warn)},
+        {0}
+    },
+    .size = sizeof(OPT_BASE_STRUCT),
+    .defaults = &(OPT_BASE_STRUCT){
+        .sub_filter_SDH_enclosures = (char *[]) {
+            "()",
+            "[]",
+            "\uFF08\uFF09",
+            NULL
+        },
+        .rf_enable = true,
+    },
+    .change_flags = UPDATE_SUB_FILT,
+};
+
 static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts);
 static void fill_plaintext(struct sd *sd, double pts);
 
@@ -84,11 +114,14 @@ static const struct sd_filter_functions *const filters[] = {
 
 // Add default styles, if the track does not have any styles yet.
 // Apply style overrides if the user provides any.
-static void mp_ass_add_default_styles(ASS_Track *track, struct mp_subtitle_opts *opts,
-                                      struct mp_subtitle_shared_opts *shared_opts, int order)
+static void mp_ass_add_default_styles(struct sd *sd, ASS_Track *track, struct mp_subtitle_opts *opts,
+                                      struct mp_subtitle_shared_opts *shared_opts)
 {
-    if (opts->ass_styles_file && shared_opts->ass_style_override[order])
-        ass_read_styles(track, opts->ass_styles_file, NULL);
+    if (opts->ass_styles_file && shared_opts->ass_style_override[sd->order]) {
+        char *file = mp_get_user_path(NULL, sd->global, opts->ass_styles_file);
+        ass_read_styles(track, file, NULL);
+        talloc_free(file);
+    }
 
     if (track->n_styles == 0) {
         if (!track->PlayResY) {
@@ -103,13 +136,14 @@ static void mp_ass_add_default_styles(ASS_Track *track, struct mp_subtitle_opts 
         mp_ass_set_style(style, track->PlayResY, opts->sub_style);
     }
 
-    if (shared_opts->ass_style_override[order])
+    if (shared_opts->ass_style_override[sd->order])
         ass_process_force_style(track);
 }
 
 static const char *const font_mimetypes[] = {
     "application/x-truetype-font",
     "application/vnd.ms-opentype",
+    "application/x-font-otf",
     "application/x-font-ttf",
     "application/x-font", // probably incorrect
     "application/font-sfnt",
@@ -181,6 +215,7 @@ static void filters_init(struct sd *sd)
         *ft = (struct sd_filter){
             .global = sd->global,
             .log = sd->log,
+            .packet_pool = demux_packet_pool_get(sd->global),
             .opts = mp_get_config_group(ft, sd->global, &mp_sub_filter_opts),
             .driver = filters[n],
             .codec = "ass",
@@ -230,7 +265,7 @@ static void assobjects_init(struct sd *sd)
     ctx->shadow_track = ass_new_track(ctx->ass_library);
     ctx->shadow_track->PlayResX = MP_ASS_FONT_PLAYRESX;
     ctx->shadow_track->PlayResY = MP_ASS_FONT_PLAYRESY;
-    mp_ass_add_default_styles(ctx->shadow_track, opts, shared_opts, sd->order);
+    mp_ass_add_default_styles(sd, ctx->shadow_track, opts, shared_opts);
 
     char *extradata = sd->codec->extradata;
     int extradata_size = sd->codec->extradata_size;
@@ -241,13 +276,18 @@ static void assobjects_init(struct sd *sd)
     if (extradata)
         ass_process_codec_private(ctx->ass_track, extradata, extradata_size);
 
-    mp_ass_add_default_styles(ctx->ass_track, opts, shared_opts, sd->order);
+    mp_ass_add_default_styles(sd, ctx->ass_track, opts, shared_opts);
 
 #if LIBASS_VERSION >= 0x01302000
     ass_set_check_readorder(ctx->ass_track, sd->opts->sub_clear_on_seek ? 0 : 1);
 #endif
 
+#if LIBASS_VERSION >= 0x01703010
+    ass_configure_prune(ctx->ass_track, sd->opts->ass_prune_delay * 1000.0);
+#endif
+
     enable_output(sd, true);
+    ass_set_cache_limits(ctx->ass_renderer, sd->opts->sub_glyph_limit, sd->opts->sub_bitmap_max_size);
 }
 
 static void assobjects_destroy(struct sd *sd)
@@ -282,7 +322,7 @@ static int init(struct sd *sd)
     ctx->packer = mp_ass_packer_alloc(ctx);
 
     // Subtitles does not have any profile value, so put the converted type as a profile.
-    const char **desc = ctx->converter ? &sd->codec->codec_profile : &sd->codec->codec_desc;
+    const char *_Atomic *desc = ctx->converter ? &sd->codec->codec_profile : &sd->codec->codec_desc;
     switch (ctx->ass_track->track_type) {
     case TRACK_TYPE_ASS:
         *desc = "Advanced Sub Station Alpha";
@@ -442,17 +482,19 @@ static void decode(struct sd *sd, struct demux_packet *packet)
             };
             filter_and_add(sd, &pkt2);
         }
-        if (sub_duration == UNKNOWN_DURATION) {
-            for (int n = track->n_events - 2; n >= 0; n--) {
-                if (track->events[n].Duration == UNKNOWN_DURATION * 1000) {
-                    if (track->events[n].Start != track->events[n + 1].Start) {
-                        track->events[n].Duration = track->events[n + 1].Start -
-                                                    track->events[n].Start;
-                    } else {
-                        track->events[n].Duration = track->events[n + 1].Duration;
-                    }
+        for (int n = track->n_events - 1; n >= 0; n--) {
+            if (track->events[track->n_events - 1].Start == track->events[n].Start)
+                continue;
+            if (track->events[n].Duration == UNKNOWN_DURATION * 1000) {
+                if (track->events[n].Start < track->events[n + 1].Start) {
+                    track->events[n].Duration = track->events[n + 1].Start -
+                                                track->events[n].Start;
+                } else if (track->events[n].Start == track->events[n + 1].Start) {
+                    track->events[n].Duration = track->events[n + 1].Duration;
                 }
             }
+            if (n > 0 && track->events[n].Start != track->events[n - 1].Start)
+                break;
         }
     } else {
         // Note that for this packet format, libass has an internal mechanism
@@ -509,8 +551,8 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     }
     if (converted || shared_opts->ass_style_override[sd->order]) {
         set_sub_pos = 100.0f - shared_opts->sub_pos[sd->order];
-        set_line_spacing = opts->ass_line_spacing;
-        set_hinting = opts->ass_hinting;
+        set_line_spacing = opts->sub_line_spacing;
+        set_hinting = opts->sub_hinting;
     }
     if (total_override || shared_opts->ass_style_override[sd->order] == ASS_STYLE_OVERRIDE_SCALE) {
         set_font_scale = opts->sub_scale;
@@ -525,16 +567,21 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     }
     ass_set_use_margins(priv, set_use_margins);
     ass_set_line_position(priv, set_sub_pos);
-    ass_set_shaper(priv, opts->ass_shaper);
+    ass_set_shaper(priv, opts->sub_shaper);
     int set_force_flags = 0;
     if (total_override) {
         set_force_flags |= ASS_OVERRIDE_BIT_FONT_NAME
                             | ASS_OVERRIDE_BIT_FONT_SIZE_FIELDS
                             | ASS_OVERRIDE_BIT_COLORS
-                            | ASS_OVERRIDE_BIT_BORDER
-                            | ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE;
+                            | ASS_OVERRIDE_BIT_BORDER;
+        if (!opts->sub_scale_signs)
+            set_force_flags |= ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE;
+#if LIBASS_VERSION >= 0x01703020
+        set_force_flags |= ASS_OVERRIDE_BIT_BLUR;
+#endif
     }
-    if (shared_opts->ass_style_override[sd->order] == ASS_STYLE_OVERRIDE_SCALE)
+    if (shared_opts->ass_style_override[sd->order] == ASS_STYLE_OVERRIDE_SCALE &&
+        !opts->sub_scale_signs)
         set_force_flags |= ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE;
     if (converted)
         set_force_flags |= ASS_OVERRIDE_BIT_ALIGNMENT;
@@ -586,9 +633,10 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
         if (override_playres) {
             int vidw = dim->w - (dim->ml + dim->mr);
             int vidh = dim->h - (dim->mt + dim->mb);
-            int old_playresx = track->PlayResX;
             track->PlayResX = track->PlayResY * (double)vidw / MPMAX(vidh, 1);
-            double fix_margins = track->PlayResX / (double)old_playresx;
+            // ffmpeg and mpv use a default PlayResX of 384 when it is not known,
+            // this comes from VSFilter.
+            double fix_margins = track->PlayResX / (double)MP_ASS_FONT_PLAYRESX;
             for (int n = 0; n < track->n_styles; n++) {
                 track->styles[n].MarginL = lrint(track->styles[n].MarginL * fix_margins);
                 track->styles[n].MarginR = lrint(track->styles[n].MarginR * fix_margins);
@@ -988,7 +1036,7 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
         ctx->video_params = *(struct mp_image_params *)arg;
         return CONTROL_OK;
     case SD_CTRL_UPDATE_OPTS: {
-        int flags = (uintptr_t)arg;
+        uint64_t flags = *(uint64_t *)arg;
         if (flags & UPDATE_SUB_FILT) {
             filters_destroy(sd);
             filters_init(sd);
@@ -1057,9 +1105,9 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
     // NONE is a bit random, but the intention is: don't modify colors.
     if (trackcsp == YCBCR_NONE)
         return;
-    if (trackcsp < sizeof(ass_csp) / sizeof(ass_csp[0]))
+    if (trackcsp < MP_ARRAY_SIZE(ass_csp))
         csp = ass_csp[trackcsp];
-    if (trackcsp < sizeof(ass_levels) / sizeof(ass_levels[0]))
+    if (trackcsp <  MP_ARRAY_SIZE(ass_levels))
         levels = ass_levels[trackcsp];
     if (trackcsp == YCBCR_DEFAULT) {
         csp = PL_COLOR_SYSTEM_BT_601;

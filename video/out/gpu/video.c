@@ -393,6 +393,9 @@ static const struct gl_video_opts gl_video_opts_def = {
     .interpolation_threshold = 0.01,
     .background = BACKGROUND_TILES,
     .background_color = {0, 0, 0, 255},
+    .background_tile_color = {{237, 237, 237, 255},
+                              {222, 222, 222, 255}},
+    .background_tile_size = 16,
     .gamma = 1.0f,
     .tone_map = {
         .curve = TONE_MAPPING_AUTO,
@@ -433,10 +436,9 @@ const struct m_sub_options gl_video_conf = {
     .opts = (const m_option_t[]) {
         {"gpu-dumb-mode", OPT_CHOICE(dumb_mode,
             {"auto", 0}, {"yes", 1}, {"no", -1})},
-        {"gamma-factor", OPT_FLOAT(gamma), M_RANGE(0.1, 2.0),
-            .deprecation_message = "no replacement"},
+        {"gamma-factor", OPT_FLOAT(gamma), M_RANGE(0.1, 2.0)},
         {"gamma-auto", OPT_BOOL(gamma_auto),
-            .deprecation_message = "no replacement"},
+            .deprecation_message = "replacement: gamma-auto.lua"},
         {"target-prim", OPT_CHOICE_C(target_prim, pl_csp_prim_names)},
         {"target-trc", OPT_CHOICE_C(target_trc, pl_csp_trc_names)},
         {"target-peak", OPT_CHOICE(target_peak, {"auto", 0}),
@@ -525,6 +527,9 @@ const struct m_sub_options gl_video_conf = {
             {"tiles", BACKGROUND_TILES})},
         {"opengl-rectangle-textures", OPT_BOOL(use_rectangle)},
         {"background-color", OPT_COLOR(background_color)},
+        {"background-tile-color-0", OPT_COLOR(background_tile_color[0])},
+        {"background-tile-color-1", OPT_COLOR(background_tile_color[1])},
+        {"background-tile-size", OPT_INT(background_tile_size), M_RANGE(1, 4096)},
         {"interpolation", OPT_BOOL(interpolation)},
         {"interpolation-threshold", OPT_FLOAT(interpolation_threshold)},
         {"blend-subtitles", OPT_CHOICE(blend_subs,
@@ -749,7 +754,7 @@ static bool gl_video_get_lut3d(struct gl_video *p, enum pl_color_primaries prim,
 static struct image image_wrap(struct ra_tex *tex, enum plane_type type,
                                int components)
 {
-    assert(type != PLANE_NONE);
+    mp_assert(type != PLANE_NONE);
     return (struct image){
         .type = type,
         .tex = tex,
@@ -774,7 +779,7 @@ static int pass_bind(struct gl_video *p, struct image img)
 static void get_transform(float w, float h, int rotate, bool flip,
                           struct gl_transform *out_tr)
 {
-    int a = rotate % 90 ? 0 : rotate / 90;
+    int a = rotate % 90 ? 0 : (rotate / 90) % 4;
     int sin90[4] = {0, 1, 0, -1}; // just to avoid rounding issues etc.
     int cos90[4] = {1, 0, -1, 0};
     struct gl_transform tr = {{{ cos90[a], sin90[a]},
@@ -821,7 +826,7 @@ static enum plane_type merge_plane_types(enum plane_type a, enum plane_type b)
 static void pass_get_images(struct gl_video *p, struct video_image *vimg,
                             struct image img[4], struct gl_transform off[4])
 {
-    assert(vimg->mpi);
+    mp_assert(vimg->mpi);
 
     int w = p->image_params.w;
     int h = p->image_params.h;
@@ -898,7 +903,10 @@ static void pass_get_images(struct gl_video *p, struct video_image *vimg,
 
         if (type == PLANE_CHROMA) {
             struct gl_transform rot;
-            get_transform(0, 0, p->image_params.rotate, true, &rot);
+            // Reverse the rotation direction here because the different
+            // coordinate system of chroma offset results in rotation
+            // in the opposite direction.
+            get_transform(0, 0, 360 - p->image_params.rotate, t->flipped, &rot);
 
             struct gl_transform tr = chroma;
             gl_transform_vec(rot, &tr.t[0], &tr.t[1]);
@@ -908,15 +916,13 @@ static void pass_get_images(struct gl_video *p, struct video_image *vimg,
 
             // Adjust the chroma offset if the real chroma size is fractional
             // due image sizes not aligned to chroma subsampling.
-            struct gl_transform rot2;
-            get_transform(0, 0, p->image_params.rotate, t->flipped, &rot2);
-            if (rot2.m[0][0] < 0)
+            if (rot.m[0][0] < 0)
                 tr.t[0] += dx;
-            if (rot2.m[1][0] < 0)
+            if (rot.m[1][0] < 0)
                 tr.t[0] += dy;
-            if (rot2.m[0][1] < 0)
+            if (rot.m[0][1] < 0)
                 tr.t[1] += dx;
-            if (rot2.m[1][1] < 0)
+            if (rot.m[1][1] < 0)
                 tr.t[1] += dy;
 
             off[n] = tr;
@@ -1079,7 +1085,7 @@ static void unref_current_image(struct gl_video *p)
     struct video_image *vimg = &p->image;
 
     if (vimg->hwdec_mapped) {
-        assert(p->hwdec_active && p->hwdec_mapper);
+        mp_assert(p->hwdec_active && p->hwdec_mapper);
         ra_hwdec_mapper_unmap(p->hwdec_mapper);
         memset(vimg->planes, 0, sizeof(vimg->planes));
         vimg->hwdec_mapped = false;
@@ -1390,7 +1396,9 @@ static const char *get_tex_swizzle(struct image *img)
 {
     if (!img->tex)
         return "rgba";
-    return img->tex->params.format->luminance_alpha ? "raaa" : "rgba";
+    if (img->tex->params.format->luminance_alpha)
+        return "raaa";
+    return img->tex->params.format->ordered ? "rgba" : "bgra";
 }
 
 // Copy a texture to the vec4 color, while increasing offset. Also applies
@@ -1401,8 +1409,8 @@ static void copy_image(struct gl_video *p, unsigned int *offset, struct image im
     char src[5] = {0};
     char dst[5] = {0};
 
-    assert(*offset + count < sizeof(dst));
-    assert(img.padding + count < sizeof(src));
+    mp_assert(*offset + count < sizeof(dst));
+    mp_assert(img.padding + count < sizeof(src));
 
     int id = pass_bind(p, img);
 
@@ -1503,7 +1511,7 @@ static bool saved_img_find(struct gl_video *p, const char *name,
 static void saved_img_store(struct gl_video *p, const char *name,
                             struct image img)
 {
-    assert(name);
+    mp_assert(name);
 
     for (int i = 0; i < p->num_saved_imgs; i++) {
         if (strcmp(p->saved_imgs[i].name, name) == 0) {
@@ -1604,7 +1612,7 @@ found:
         bool is_overwrite = strcmp(store_name, name) == 0;
 
         // If user shader is set to align HOOKED with reference and fix its
-        // offset, it requires HOOKED to be resizable and overwrited.
+        // offset, it requires HOOKED to be resizable and overwritten.
         if (is_overwrite && hook->align_offset) {
             if (!trans) {
                 MP_ERR(p, "Hook tried to align unresizable texture %s!\n",
@@ -1762,7 +1770,7 @@ static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
                           double scale_factor,
                           int sizes[])
 {
-    assert(conf);
+    mp_assert(conf);
     if (scaler_conf_eq(scaler->conf, *conf) &&
         scaler->scale_factor == scale_factor &&
         scaler->initialized)
@@ -1827,11 +1835,11 @@ static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
     int size = scaler->kernel->size;
     int num_components = size > 2 ? 4 : size;
     const struct ra_format *fmt = ra_find_float16_format(p->ra, num_components);
-    assert(fmt);
+    mp_assert(fmt);
 
     int width = (size + num_components - 1) / num_components; // round up
     int stride = width * num_components;
-    assert(size <= stride);
+    mp_assert(size <= stride);
 
     static const int lut_size = 256;
     float *weights = talloc_array(NULL, float, lut_size * stride);
@@ -2061,7 +2069,7 @@ static bool szexp_lookup(void *priv, struct bstr var, float size[2])
 static bool user_hook_cond(struct gl_video *p, struct image img, void *priv)
 {
     struct gl_user_shader_hook *shader = priv;
-    assert(shader);
+    mp_assert(shader);
 
     float res = false;
     struct szexp_ctx ctx = {p, img};
@@ -2073,7 +2081,7 @@ static void user_hook(struct gl_video *p, struct image img,
                       struct gl_transform *trans, void *priv)
 {
     struct gl_user_shader_hook *shader = priv;
-    assert(shader);
+    mp_assert(shader);
     load_shader(p, shader->pass_body);
 
     pass_describe(p, "user shader: %.*s (%s)", BSTR_P(shader->pass_desc),
@@ -2618,7 +2626,7 @@ static void pass_scale_main(struct gl_video *p)
 // by previous passes (i.e. linear scaling)
 static void pass_colormanage(struct gl_video *p, struct pl_color_space src,
                              enum mp_csp_light src_light,
-                             struct pl_color_space fbo_csp, int flags, bool osd)
+                             const struct pl_color_space *fbo_csp, int flags, bool osd)
 {
     struct ra *ra = p->ra;
 
@@ -2628,16 +2636,16 @@ static void pass_colormanage(struct gl_video *p, struct pl_color_space src,
     // values are guesstimated later in this function.
     struct pl_color_space dst = {
         .transfer = p->opts.target_trc == PL_COLOR_TRC_UNKNOWN ?
-                        fbo_csp.transfer : p->opts.target_trc,
+                        fbo_csp->transfer : p->opts.target_trc,
         .primaries = p->opts.target_prim == PL_COLOR_PRIM_UNKNOWN ?
-                     fbo_csp.primaries : p->opts.target_prim,
+                     fbo_csp->primaries : p->opts.target_prim,
         .hdr.max_luma = !p->opts.target_peak ?
-                        fbo_csp.hdr.max_luma : p->opts.target_peak,
+                        fbo_csp->hdr.max_luma : p->opts.target_peak,
     };
 
     if (!p->colorspace_override_warned &&
-        ((fbo_csp.transfer && dst.transfer != fbo_csp.transfer) ||
-         (fbo_csp.primaries && dst.primaries != fbo_csp.primaries)))
+        ((fbo_csp->transfer && dst.transfer != fbo_csp->transfer) ||
+         (fbo_csp->primaries && dst.primaries != fbo_csp->primaries)))
     {
         MP_WARN(p, "One or more colorspace value is being overridden "
                    "by user while the FBO provides colorspace information: "
@@ -2645,9 +2653,9 @@ static void pass_colormanage(struct gl_video *p, struct pl_color_space src,
                    "primaries: (dst: %s, fbo: %s). "
                    "Rendering can lead to incorrect results!\n",
                 m_opt_choice_str(pl_csp_trc_names,  dst.transfer),
-                m_opt_choice_str(pl_csp_trc_names,  fbo_csp.transfer),
+                m_opt_choice_str(pl_csp_trc_names,  fbo_csp->transfer),
                 m_opt_choice_str(pl_csp_prim_names, dst.primaries),
-                m_opt_choice_str(pl_csp_prim_names, fbo_csp.primaries));
+                m_opt_choice_str(pl_csp_prim_names, fbo_csp->primaries));
         p->colorspace_override_warned = true;
     }
 
@@ -2671,7 +2679,7 @@ static void pass_colormanage(struct gl_video *p, struct pl_color_space src,
         if (gl_video_get_lut3d(p, prim_orig, trc_orig)) {
             dst.primaries = prim_orig;
             dst.transfer = trc_orig;
-            assert(dst.primaries && dst.transfer);
+            mp_assert(dst.primaries && dst.transfer);
         }
     }
 
@@ -2783,7 +2791,7 @@ static void pass_colormanage(struct gl_video *p, struct pl_color_space src,
     }
 
     // Adapt from src to dst as necessary
-    pass_color_map(p->sc, p->use_linear && !osd, src, dst, src_light, dst_light, &tone_map);
+    pass_color_map(p->sc, p->use_linear && !osd, &src, &dst, src_light, dst_light, &tone_map);
 
     if (!osd) {
         struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
@@ -2996,7 +3004,7 @@ static void pass_draw_osd(struct gl_video *p, int osd_flags, int frame_flags,
                 .transfer = PL_COLOR_TRC_SRGB,
             };
 
-            pass_colormanage(p, csp_srgb, MP_CSP_LIGHT_DISPLAY, fbo->color_space,
+            pass_colormanage(p, csp_srgb, MP_CSP_LIGHT_DISPLAY, &fbo->color_space,
                              frame_flags, true);
         }
         mpgl_osd_draw_finish(p->osd, n, p->sc, fbo);
@@ -3150,7 +3158,7 @@ static void pass_draw_to_screen(struct gl_video *p, const struct ra_fbo *fbo, in
     }
 
     pass_colormanage(p, p->image_params.color, p->image_params.light,
-                     fbo->color_space, flags, false);
+                     &fbo->color_space, flags, false);
 
     // Since finish_pass_fbo doesn't work with compute shaders, and neither
     // does the checkerboard/dither code, we may need an indirection via
@@ -3166,11 +3174,15 @@ static void pass_draw_to_screen(struct gl_video *p, const struct ra_fbo *fbo, in
     if (p->has_alpha) {
         if (p->opts.background == BACKGROUND_TILES) {
             // Draw checkerboard pattern to indicate transparency
+            struct m_color *c = p->opts.background_tile_color;
             GLSLF("// transparency checkerboard\n");
-            GLSLF("vec2 tile_coord = vec2(gl_FragCoord.x, %d.0 + %f * gl_FragCoord.y);",
+            GLSLF("vec2 tile_coord = vec2(gl_FragCoord.x, %d.0 + %f * gl_FragCoord.y);\n",
                   fbo->flip ? fbo->tex->params.h : 0, fbo->flip ? -1.0 : 1.0);
-            GLSL(bvec2 tile = lessThan(fract(tile_coord * 1.0 / 32.0), vec2(0.5));)
-            GLSL(vec3 background = vec3(tile.x == tile.y ? 0.93 : 0.87);)
+            GLSLF("bvec2 tile = lessThan(fract(tile_coord * 1.0 / %d.0), vec2(0.5));\n",
+                  p->opts.background_tile_size * 2);
+            GLSLF("vec3 background = tile.x == tile.y ? vec3(%f, %f, %f) : vec3(%f, %f, %f);\n",
+                  c[0].r / 255.0, c[0].g / 255.0, c[0].b / 255.0,
+                  c[1].r / 255.0, c[1].g / 255.0, c[1].b / 255.0);
             GLSL(color.rgb += background.rgb * (1.0 - color.a);)
             GLSL(color.a = 1.0;)
         } else if (p->opts.background == BACKGROUND_COLOR) {
@@ -3264,7 +3276,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
     if (oversample || linear) {
         size = 2;
     } else {
-        assert(tscale->kernel && !tscale->kernel->polar);
+        mp_assert(tscale->kernel && !tscale->kernel->polar);
         size = ceil(tscale->kernel->size);
     }
 
@@ -3272,7 +3284,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
     int surface_now = p->surface_now;
     int surface_bse = surface_wrap(surface_now - (radius-1));
     int surface_end = surface_wrap(surface_now + radius);
-    assert(surface_wrap(surface_bse + size-1) == surface_end);
+    mp_assert(surface_wrap(surface_bse + size-1) == surface_end);
 
     // Render new frames while there's room in the queue. Note that technically,
     // this should be done before the step where we find the right frame, but
@@ -3378,7 +3390,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
             // the textures are bound in-order and starting at 0, we just
             // assert to make sure this is the case (which it should always be)
             int id = pass_bind(p, img);
-            assert(id == i);
+            mp_assert(id == i);
         }
 
         MP_TRACE(p, "inter frame dur: %f vsync: %f, mix: %f\n",
@@ -3467,7 +3479,8 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
                                       fbo->tex->params.w, fbo->tex->params.h,
                                       fmt);
                 }
-                const struct ra_fbo *dest_fbo = r ? &(struct ra_fbo) { p->output_tex } : fbo;
+                const struct ra_fbo *dest_fbo =
+                    r ? &(struct ra_fbo) { .tex = p->output_tex, .color_space = fbo->color_space } : fbo;
                 p->output_tex_valid = r;
                 pass_draw_to_screen(p, dest_fbo, flags);
             }
@@ -3586,7 +3599,7 @@ void gl_video_screenshot(struct gl_video *p, struct vo_frame *frame,
     };
 
     params.format = ra_find_unorm_format(p->ra, 1, 4);
-    int mpfmt = IMGFMT_RGB0;
+    int mpfmt = p->has_alpha ? IMGFMT_RGBA : IMGFMT_RGB0;
     if (args->high_bit_depth && p->ra_format.component_bits > 8) {
         const struct ra_format *fmt = ra_find_unorm_format(p->ra, 2, 4);
         if (fmt && fmt->renderable) {
@@ -3735,6 +3748,7 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
                     .w = mp_image_plane_w(&layout, n),
                     .h = mp_image_plane_h(&layout, n),
                     .tex = tex[n],
+                    .flipped = layout.params.vflip,
                 };
             }
         } else {
@@ -3745,9 +3759,13 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
     }
 
     // Software decoding
-    assert(mpi->num_planes == p->plane_count);
+    mp_assert(mpi->num_planes == p->plane_count);
 
     timer_pool_start(p->upload_timer);
+
+    if (mpi->params.vflip)
+        mp_image_vflip(mpi);
+
     for (int n = 0; n < p->plane_count; n++) {
         struct texplane *plane = &vimg->planes[n];
         if (!plane->tex) {
@@ -3962,6 +3980,9 @@ static void check_gl_features(struct gl_video *p)
             .background = p->opts.background,
             .use_rectangle = p->opts.use_rectangle,
             .background_color = p->opts.background_color,
+            .background_tile_color[0] = p->opts.background_tile_color[0],
+            .background_tile_color[1] = p->opts.background_tile_color[1],
+            .background_tile_size = p->opts.background_tile_size,
             .dither_algo = p->opts.dither_algo,
             .dither_depth = p->opts.dither_depth,
             .dither_size = p->opts.dither_size,
@@ -4077,7 +4098,7 @@ void gl_video_uninit(struct gl_video *p)
     gc_pending_dr_fences(p, true);
 
     // Should all have been unreffed already.
-    assert(!p->num_dr_buffers);
+    mp_assert(!p->num_dr_buffers);
 
     talloc_free(p);
 }
@@ -4271,11 +4292,11 @@ static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *op
     return r;
 }
 
-void gl_video_set_ambient_lux(struct gl_video *p, int lux)
+void gl_video_set_ambient_lux(struct gl_video *p, double lux)
 {
     if (p->opts.gamma_auto) {
         p->opts.gamma = gl_video_scale_ambient_lux(16.0, 256.0, 1.0, 1.2, lux);
-        MP_TRACE(p, "ambient light changed: %d lux (gamma: %f)\n", lux,
+        MP_TRACE(p, "ambient light changed: %f lux (gamma: %f)\n", lux,
                  p->opts.gamma);
     }
 }
@@ -4305,7 +4326,7 @@ static void gl_video_dr_free_buffer(void *opaque, uint8_t *data)
     for (int n = 0; n < p->num_dr_buffers; n++) {
         struct dr_buffer *buffer = &p->dr_buffers[n];
         if (buffer->buf->data == data) {
-            assert(!buffer->mpi); // can't be freed while it has a ref
+            mp_assert(!buffer->mpi); // can't be freed while it has a ref
             ra_buf_free(p->ra, &buffer->buf);
             MP_TARRAY_REMOVE_AT(p->dr_buffers, p->num_dr_buffers, n);
             return;
@@ -4351,7 +4372,7 @@ void gl_video_init_hwdecs(struct gl_video *p, struct ra_ctx *ra_ctx,
                           struct mp_hwdec_devices *devs,
                           bool load_all_by_default)
 {
-    assert(!p->hwdec_ctx.ra_ctx);
+    mp_assert(!p->hwdec_ctx.ra_ctx);
     p->hwdec_ctx = (struct ra_hwdec_ctx) {
         .log = p->log,
         .global = p->global,
@@ -4364,7 +4385,7 @@ void gl_video_init_hwdecs(struct gl_video *p, struct ra_ctx *ra_ctx,
 void gl_video_load_hwdecs_for_img_fmt(struct gl_video *p, struct mp_hwdec_devices *devs,
                                       struct hwdec_imgfmt_request *params)
 {
-    assert(p->hwdec_ctx.ra_ctx);
+    mp_assert(p->hwdec_ctx.ra_ctx);
     ra_hwdec_ctx_load_fmt(&p->hwdec_ctx, devs, params);
 }
 

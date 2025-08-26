@@ -72,6 +72,7 @@ const struct m_sub_options ad_lavc_conf = {
         {"o", OPT_KEYVALUELIST(avopts)},
         {0}
     },
+    .change_flags = UPDATE_AD,
     .size = sizeof(struct ad_lavc_params),
     .defaults = &(const struct ad_lavc_params){
         .ac3drc = 0,
@@ -86,7 +87,6 @@ static bool init(struct mp_filter *da, struct mp_codec_params *codec,
     struct MPOpts *mpopts = mp_get_config_group(ctx, da->global, &mp_opt_root);
     struct ad_lavc_params *opts =
         mp_get_config_group(ctx, da->global, &ad_lavc_conf);
-    AVCodecContext *lavc_context;
     const AVCodec *lavc_codec;
 
     ctx->codec_timebase = mp_get_codec_timebase(codec);
@@ -100,14 +100,15 @@ static bool init(struct mp_filter *da, struct mp_codec_params *codec,
         return false;
     }
 
-    lavc_context = avcodec_alloc_context3(lavc_codec);
-    ctx->avctx = lavc_context;
+    ctx->avctx = avcodec_alloc_context3(lavc_codec);
+    MP_HANDLE_OOM(ctx->avctx);
     ctx->avframe = av_frame_alloc();
+    MP_HANDLE_OOM(ctx->avframe);
     ctx->avpkt = av_packet_alloc();
-    MP_HANDLE_OOM(ctx->avctx && ctx->avframe && ctx->avpkt);
-    lavc_context->codec_type = AVMEDIA_TYPE_AUDIO;
-    lavc_context->codec_id = lavc_codec->id;
-    lavc_context->pkt_timebase = ctx->codec_timebase;
+    MP_HANDLE_OOM(ctx->avpkt);
+    ctx->avctx->codec_type = AVMEDIA_TYPE_AUDIO;
+    ctx->avctx->codec_id = lavc_codec->id;
+    ctx->avctx->pkt_timebase = ctx->codec_timebase;
 
     if (opts->downmix && mpopts->audio_output_channels.num_chmaps == 1) {
         const struct mp_chmap *requested_layout =
@@ -117,30 +118,30 @@ static bool init(struct mp_filter *da, struct mp_codec_params *codec,
 
         // Always try to set requested output layout - currently only something
         // supported by AC3, MLP/TrueHD, DTS and the fdk-aac wrapper.
-        av_opt_set_chlayout(lavc_context, "downmix", &av_layout,
+        av_opt_set_chlayout(ctx->avctx, "downmix", &av_layout,
                             AV_OPT_SEARCH_CHILDREN);
 
         av_channel_layout_uninit(&av_layout);
     }
 
     // Always try to set - option only exists for AC3 at the moment
-    av_opt_set_double(lavc_context, "drc_scale", opts->ac3drc,
+    av_opt_set_double(ctx->avctx, "drc_scale", opts->ac3drc,
                       AV_OPT_SEARCH_CHILDREN);
 
     // Let decoder add AV_FRAME_DATA_SKIP_SAMPLES.
-    av_opt_set(lavc_context, "flags2", "+skip_manual", AV_OPT_SEARCH_CHILDREN);
+    av_opt_set(ctx->avctx, "flags2", "+skip_manual", AV_OPT_SEARCH_CHILDREN);
 
-    mp_set_avopts(da->log, lavc_context, opts->avopts);
+    mp_set_avopts(da->log, ctx->avctx, opts->avopts);
 
-    if (mp_set_avctx_codec_headers(lavc_context, codec) < 0) {
+    if (mp_set_avctx_codec_headers(ctx->avctx, codec) < 0) {
         MP_ERR(da, "Could not set decoder parameters.\n");
         return false;
     }
 
-    mp_set_avcodec_threads(da->log, lavc_context, opts->threads);
+    mp_set_avcodec_threads(da->log, ctx->avctx, opts->threads);
 
     /* open it */
-    if (avcodec_open2(lavc_context, lavc_codec, NULL) < 0) {
+    if (avcodec_open2(ctx->avctx, lavc_codec, NULL) < 0) {
         MP_ERR(da, "Could not open codec.\n");
         return false;
     }
@@ -200,7 +201,7 @@ static int receive_frame(struct mp_filter *da, struct mp_frame *out)
     if (ret == AVERROR_EOF) {
         // If flushing was initialized earlier and has ended now, make it start
         // over in case we get new packets at some point in the future.
-        // (Dont' reset the filter itself, we want to keep other state.)
+        // (Don't reset the filter itself, we want to keep other state.)
         avcodec_flush_buffers(priv->avctx);
         return ret;
     } else if (ret < 0 && ret != AVERROR(EAGAIN)) {

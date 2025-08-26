@@ -44,11 +44,13 @@ enum dir_mode {
 };
 
 enum autocreate_mode {
-    AUTO_NONE  = 0,
-    AUTO_VIDEO = 1 << 0,
-    AUTO_AUDIO = 1 << 1,
-    AUTO_IMAGE = 1 << 2,
-    AUTO_ANY   = 1 << 3,
+    AUTO_NONE     = 0,
+    AUTO_VIDEO    = 1 << 0,
+    AUTO_AUDIO    = 1 << 1,
+    AUTO_IMAGE    = 1 << 2,
+    AUTO_ARCHIVE  = 1 << 3,
+    AUTO_PLAYLIST = 1 << 4,
+    AUTO_ANY      = 1 << 5,
 };
 
 #define OPT_BASE_STRUCT struct demux_playlist_opts
@@ -72,9 +74,10 @@ struct m_sub_options demux_playlist_conf = {
     .defaults = &(const struct demux_playlist_opts){
         .dir_mode = DIR_AUTO,
         .directory_filter = (char *[]){
-            "video", "audio", "image", NULL
+            "video", "audio", "image", "archive", "playlist", NULL
         },
     },
+    .change_flags = UPDATE_DEMUXER,
 };
 
 static bool check_mimetype(struct stream *s, const char *const *list)
@@ -437,6 +440,10 @@ static bool test_path(struct pl_parser *p, char *path, int autocreate)
         return true;
     if (autocreate & AUTO_IMAGE && str_in_list(ext, p->mp_opts->image_exts))
         return true;
+    if (autocreate & AUTO_ARCHIVE && str_in_list(ext, p->mp_opts->archive_exts))
+        return true;
+    if (autocreate & AUTO_PLAYLIST && str_in_list(ext, p->mp_opts->playlist_exts))
+        return true;
 
     return false;
 }
@@ -520,6 +527,10 @@ static enum autocreate_mode get_directory_filter(struct pl_parser *p)
         autocreate |= AUTO_AUDIO;
     if (str_in_list(bstr0("image"), p->opts->directory_filter))
         autocreate |= AUTO_IMAGE;
+    if (str_in_list(bstr0("archive"), p->opts->directory_filter))
+        autocreate |= AUTO_ARCHIVE;
+    if (str_in_list(bstr0("playlist"), p->opts->directory_filter))
+        autocreate |= AUTO_PLAYLIST;
     return autocreate;
 }
 
@@ -542,6 +553,10 @@ static int parse_dir(struct pl_parser *p)
                 autocreate = AUTO_AUDIO;
             } else if (str_in_list(ext, p->mp_opts->image_exts)) {
                 autocreate = AUTO_IMAGE;
+            } else if (str_in_list(ext, p->mp_opts->archive_exts)) {
+                autocreate = AUTO_ARCHIVE;
+            } else if (str_in_list(ext, p->mp_opts->playlist_exts)) {
+                autocreate = AUTO_PLAYLIST;
             }
             break;
         }
@@ -685,7 +700,8 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
         bstr proto = mp_split_proto(bstr0(demuxer->filename), NULL);
         // Don't add base path to self-expanding protocols
         if (bstrcasecmp0(proto, "memory") && bstrcasecmp0(proto, "lavf") &&
-            bstrcasecmp0(proto, "hex"))
+            bstrcasecmp0(proto, "hex") && bstrcasecmp0(proto, "data") &&
+            bstrcasecmp0(proto, "fd"))
         {
             playlist_add_base_path(p->pl, mp_dirname(demuxer->filename));
         }

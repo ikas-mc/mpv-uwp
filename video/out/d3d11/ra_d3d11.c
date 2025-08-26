@@ -1250,8 +1250,8 @@ static void blit(struct ra *ra, struct ra_tex *dst, struct ra_tex *src,
     struct mp_rect dst_rc = *dst_rc_ptr;
     struct mp_rect src_rc = *src_rc_ptr;
 
-    assert(dst->params.dimensions == 2);
-    assert(src->params.dimensions == 2);
+    mp_assert(dst->params.dimensions == 2);
+    mp_assert(src->params.dimensions == 2);
 
     // A zero-sized target rectangle is a no-op
     if (!mp_rect_w(dst_rc) || !mp_rect_h(dst_rc))
@@ -1500,7 +1500,7 @@ static size_t vbuf_upload(struct ra *ra, void *data, size_t size)
     return offset;
 }
 
-static const char cache_magic[4] = "RD11";
+static const char cache_magic[4] MP_NONSTRING = "RD11";
 static const uint32_t cache_version = 4;
 
 struct cache_header {
@@ -2261,7 +2261,7 @@ static void destroy(struct ra *ra)
     talloc_free(ra);
 }
 
-static struct ra_fns ra_fns_d3d11 = {
+static const struct ra_fns ra_fns_d3d11 = {
     .destroy            = destroy,
     .tex_create         = tex_create,
     .tex_destroy        = tex_destroy,

@@ -13,7 +13,7 @@ local pending_hooks = {}            -- as set (keys only, meaningless values)
 -- profile the condition is evaluated for.
 local current_profile = nil
 
--- Cached set of all top-level mpv properities. Only used for extra validation.
+-- Cached set of all top-level mpv properties. Only used for extra validation.
 local property_set = {}
 for _, property in pairs(mp.get_property_native("property-list")) do
     property_set[property] = true
@@ -194,8 +194,7 @@ mp.observe_property("profile-list", "native", function (_, profiles_property)
     load_profiles(profiles_property)
 
     if #profiles < 1 and mp.get_property("load-auto-profiles") == "auto" then
-        -- make it exit immediately
-        _G.mp_event_loop = function() end
+        exit()
         return
     end
 
@@ -204,5 +203,5 @@ end)
 
 mp.register_idle(on_idle)
 for _, name in ipairs({"on_load", "on_preloaded", "on_before_start_file"}) do
-    mp.add_hook(name, 50, on_hook)
+    mp.add_hook(name, 5, on_hook)
 end

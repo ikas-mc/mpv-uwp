@@ -4,7 +4,8 @@ import os
 import re
 import subprocess
 import sys
-from typing import Callable, Dict, Optional, Tuple
+from collections.abc import Callable
+from typing import Optional
 
 
 def call(cmd) -> str:
@@ -12,7 +13,7 @@ def call(cmd) -> str:
     ret = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, text=True)
     return ret.stdout
 
-lint_rules: Dict[str, Tuple[Callable, str]] = {}
+lint_rules: dict[str, tuple[Callable, str]] = {}
 
 # A lint rule should return True if everything is okay
 def lint_rule(description: str):
@@ -105,7 +106,7 @@ def line_too_long(body):
     "Prefix should not include file extension (use `vo_gpu: ...` not `vo_gpu.c: ...`)",
 )
 def no_file_exts(body):
-    return not re.search(r"[a-z0-9]\.([chm]|cpp|swift|py): ", body[0])
+    return not re.search(r"[a-z0-9]\.([chm]|cpp|swift|rst): ", body[0])
 
 ################################################################################
 

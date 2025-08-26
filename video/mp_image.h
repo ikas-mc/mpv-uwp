@@ -57,6 +57,8 @@ struct mp_image_params {
 
     enum mp_csp_light light;
     enum pl_chroma_location chroma_location;
+    // The image should be flipped vertically before rotating
+    bool vflip;
     // The image should be rotated clockwise (0-359 degrees).
     int rotate;
     enum mp_stereo3d_mode stereo3d; // image is encoded with this mode
@@ -182,6 +184,9 @@ bool mp_image_params_equal(const struct mp_image_params *p1,
                            const struct mp_image_params *p2);
 bool mp_image_params_static_equal(const struct mp_image_params *p1,
                                   const struct mp_image_params *p2);
+void mp_image_params_update_dynamic(struct mp_image_params *dst,
+                                    const struct mp_image_params *src,
+                                    bool has_peak_detect_values);
 void mp_image_params_restore_dovi_mapping(struct mp_image_params *params);
 
 void mp_image_params_get_dsize(const struct mp_image_params *p,

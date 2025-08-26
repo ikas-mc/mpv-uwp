@@ -103,21 +103,25 @@ static int init(struct sd *sd)
 
     switch (cid) {
     case AV_CODEC_ID_DVB_TELETEXT: {
-        int64_t format;
+        int64_t format = -1;
         int ret = av_opt_get_int(ctx, "txt_format", AV_OPT_SEARCH_CHILDREN, &format);
-        // format == 0 is bitmap
-        if (!ret && format)
+        // libzvbi_teletextdec: format == 0 is bitmap
+        if (ret || format)
             goto error_probe;
         break;
     }
     case AV_CODEC_ID_ARIB_CAPTION: {
-        int64_t format;
+        int64_t format = -1;
+        // FFmpeg has both libaribb24 and libaribcaption as decoders. Only the latter
+        // can produce bitmaps, so abort if we don't find the option.
         int ret = av_opt_get_int(ctx, "sub_type", AV_OPT_SEARCH_CHILDREN, &format);
-        if (!ret && format != SUBTITLE_BITMAP)
+        if (ret || format != SUBTITLE_BITMAP)
             goto error_probe;
         break;
     }
     }
+
+    MP_VERBOSE(sd, "Using subtitle decoder %s\n", sub_codec->name);
 
     priv->avpkt = av_packet_alloc();
     priv->codec = sd->codec;
@@ -217,7 +221,7 @@ static void read_sub_bitmaps(struct sd *sd, struct sub *sub)
         struct sub_bitmap *b = &sub->inbitmaps[sub->count];
 
         if (r->type != SUBTITLE_BITMAP) {
-            MP_ERR(sd, "unsupported subtitle type from libavcodec\n");
+            MP_ERR(sd, "unsupported subtitle type from decoder (%d)\n", r->type);
             continue;
         }
         if (!(r->flags & AV_SUBTITLE_FLAG_FORCED) && opts->sub_forced_events_only)
@@ -284,8 +288,8 @@ static void read_sub_bitmaps(struct sd *sd, struct sub *sub)
         sub->src_w = MPMAX(sub->src_w, b->x + b->w);
         sub->src_h = MPMAX(sub->src_h, b->y + b->h);
 
-        assert(r->nb_colors > 0);
-        assert(r->nb_colors <= 256);
+        mp_assert(r->nb_colors > 0);
+        mp_assert(r->nb_colors <= 256);
         uint32_t pal[256] = {0};
         memcpy(pal, data[1], r->nb_colors * 4);
         convert_pal(pal, 256, opts->sub_gray);
@@ -472,7 +476,24 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res d,
             video_par = par;
     }
     if (priv->avctx->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
-        video_par = -1;
+    {
+        // For Blu-ray subs on SD video, try to match the video PAR.
+        if (priv->video_params.w == 720 &&
+            (priv->video_params.h == 480 ||
+             priv->video_params.h == 576))
+        {
+            double par = priv->video_params.p_w / (double)priv->video_params.p_h;
+            if (isnormal(par))
+                video_par = par * -1;
+            else
+                video_par = -1;
+        }
+        else
+        {
+            // Force letter-boxing on all other Blu-ray subtitles
+            video_par = -1;
+        }
+    }
     if (opts->stretch_image_subs)
         d.ml = d.mr = d.mt = d.mb = 0;
     int w = priv->avctx->width;
@@ -524,7 +545,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res d,
         res->change_id++;
 
     if (!res->change_id) {
-        assert(priv->prevret_num == res->num_parts);
+        mp_assert(priv->prevret_num == res->num_parts);
         for (int n = 0; n < priv->prevret_num; n++) {
             struct sub_bitmap *a = &res->parts[n];
             struct sub_bitmap *b = &priv->prevret[n];

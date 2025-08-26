@@ -30,6 +30,9 @@
 #include "osdep/timer.h"
 #include "misc/jni.h"
 
+static mp_static_mutex jni_static_lock = MP_STATIC_MUTEX_INITIALIZER;
+static int jni_static_use_count = 0;
+
 struct priv {
     jobject audiotrack;
     jint samplerate;
@@ -524,26 +527,40 @@ static int AudioTrack_write(struct ao *ao, int len)
 
 static void uninit_jni(struct ao *ao)
 {
-    JNIEnv *env = MP_JNI_GET_ENV(ao);
-    for (int i = 0; i < MP_ARRAY_SIZE(jclass_list); i++) {
-        mp_jni_reset_jfields(env, jclass_list[i].fields,
-                             jclass_list[i].mapping, 1, ao->log);
+    mp_mutex_lock(&jni_static_lock);
+    jni_static_use_count--;
+    if (jni_static_use_count == 0) {
+        JNIEnv *env = MP_JNI_GET_ENV(ao);
+        for (int i = 0; i < MP_ARRAY_SIZE(jclass_list); i++) {
+            mp_jni_reset_jfields(env, jclass_list[i].fields,
+                                jclass_list[i].mapping, 1, ao->log);
+        }
     }
+    mp_mutex_unlock(&jni_static_lock);
 }
 
 static int init_jni(struct ao *ao)
 {
+    mp_mutex_lock(&jni_static_lock);
     JNIEnv *env = MP_JNI_GET_ENV(ao);
-    for (int i = 0; i < MP_ARRAY_SIZE(jclass_list); i++) {
-        if (mp_jni_init_jfields(env, jclass_list[i].fields,
-                                jclass_list[i].mapping, 1, ao->log) < 0) {
-            goto error;
+    if (jni_static_use_count == 0) {
+        for (int i = 0; i < MP_ARRAY_SIZE(jclass_list); i++) {
+            if (mp_jni_init_jfields(env, jclass_list[i].fields,
+                                    jclass_list[i].mapping, 1, ao->log) < 0) {
+                goto error;
+            }
         }
     }
+    jni_static_use_count++;
+    mp_mutex_unlock(&jni_static_lock);
     return 0;
 
 error:
-    uninit_jni(ao);
+    for (int i = 0; i < MP_ARRAY_SIZE(jclass_list); i++) {
+        mp_jni_reset_jfields(env, jclass_list[i].fields,
+                            jclass_list[i].mapping, 1, ao->log);
+    }
+    mp_mutex_unlock(&jni_static_lock);
     return -1;
 }
 
@@ -702,7 +719,7 @@ static int init(struct ao *ao)
         if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
             goto error;
         p->channel_config = layout_map[ao->channels.num];
-        assert(p->channel_config);
+        mp_assert(p->channel_config);
     }
 
     jint buffer_size = MP_JNI_CALL_STATIC_INT(
@@ -726,7 +743,7 @@ static int init(struct ao *ao)
     max = MP_ALIGN_UP(max, bps);
     p->size = MPCLAMP(buffer_size * 2, min, max);
     MP_VERBOSE(ao, "Setting bufferSize = %d (driver=%d, min=%d, max=%d)\n", p->size, buffer_size, min, max);
-    assert(p->size % bps == 0);
+    mp_assert(p->size % bps == 0);
     ao->device_buffer = p->size / bps;
 
     p->chunksize = p->size;

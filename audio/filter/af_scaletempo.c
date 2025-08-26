@@ -117,7 +117,7 @@ static bool fill_queue(struct priv *s)
     }
 
     int bytes_needed = s->bytes_queue - s->bytes_queued;
-    assert(bytes_needed >= 0);
+    mp_assert(bytes_needed >= 0);
 
     int bytes_copy = MPMIN(bytes_needed, bytes_in);
     if (bytes_copy > 0) {
@@ -183,7 +183,7 @@ static int best_overlap_offset_float(struct priv *s)
     float *target = (float *)s->buf_overlap + num_channels;
     int num_samples = s->samples_overlap - num_channels;
     int step_size = 3;
-    float history[3] = {};
+    float history[3] = {0};
 
     float best_distance = FLT_MAX;
     int best_offset_approx = 0;
@@ -232,7 +232,7 @@ static int best_overlap_offset_s16(struct priv *s)
     int16_t *target = (int16_t *)s->buf_overlap + num_channels;
     int num_samples = s->samples_overlap - num_channels;
     int step_size = 3;
-    int32_t history[3] = {};
+    int32_t history[3] = {0};
 
     int32_t best_distance = INT32_MAX;
     int best_offset_approx = 0;
@@ -652,10 +652,10 @@ const struct mp_user_filter_entry af_scaletempo = {
             .scale_nominal = 1.0,
         },
         .options = (const struct m_option[]) {
-            {"scale", OPT_FLOAT(scale_nominal), M_RANGE(0.01, DBL_MAX)},
-            {"stride", OPT_FLOAT(ms_stride), M_RANGE(0.01, DBL_MAX)},
+            {"scale", OPT_FLOAT(scale_nominal), M_RANGE(0.01, FLT_MAX)},
+            {"stride", OPT_FLOAT(ms_stride), M_RANGE(0.01, FLT_MAX)},
             {"overlap", OPT_FLOAT(factor_overlap), M_RANGE(0, 1)},
-            {"search", OPT_FLOAT(ms_search), M_RANGE(0, DBL_MAX)},
+            {"search", OPT_FLOAT(ms_search), M_RANGE(0, FLT_MAX)},
             {"speed", OPT_CHOICE(speed_opt,
                 {"pitch", SCALE_PITCH},
                 {"tempo", SCALE_TEMPO},

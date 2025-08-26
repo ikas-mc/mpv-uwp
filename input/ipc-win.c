@@ -26,7 +26,7 @@
 #include "common/global.h"
 #include "common/msg.h"
 #include "input/input.h"
-#include "libmpv/client.h"
+#include "mpv/client.h"
 #include "options/m_config.h"
 #include "options/options.h"
 #include "player/client.h"
@@ -303,8 +303,9 @@ done:
         CloseHandle(arg->write_ol.hEvent);
 
     CloseHandle(arg->client_h);
-    mpv_destroy(arg->client);
+    mpv_handle *client = arg->client;
     talloc_free(arg);
+    mpv_destroy(client);
     MP_THREAD_RETURN();
 }
 

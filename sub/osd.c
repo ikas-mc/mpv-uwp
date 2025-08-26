@@ -81,15 +81,15 @@ const struct m_sub_options osd_style_conf = {
     .size = sizeof(struct osd_style_opts),
     .defaults = &(const struct osd_style_opts){
         .font = "sans-serif",
-        .font_size = 55,
+        .font_size = 30,
         .color = {255, 255, 255, 255},
         .outline_color = {0, 0, 0, 255},
-        .back_color = {240, 240, 240, 128},
+        .back_color = {0, 0, 0, 175},
         .border_style = 1,
-        .outline_size = 3,
+        .outline_size = 1.65,
         .shadow_offset = 0,
-        .margin_x = 25,
-        .margin_y = 22,
+        .margin_x = 16,
+        .margin_y = 16,
         .align_x = -1,
         .align_y = -1,
     },
@@ -101,17 +101,48 @@ const struct m_sub_options sub_style_conf = {
     .size = sizeof(struct osd_style_opts),
     .defaults = &(const struct osd_style_opts){
         .font = "sans-serif",
-        .font_size = 55,
+        .font_size = 38,
         .color = {255, 255, 255, 255},
         .outline_color = {0, 0, 0, 255},
-        .back_color = {240, 240, 240, 128},
+        .back_color = {0, 0, 0, 175},
         .border_style = 1,
-        .outline_size = 3,
+        .outline_size = 1.65,
         .shadow_offset = 0,
-        .margin_x = 25,
-        .margin_y = 22,
+        .margin_x = 19,
+        .margin_y = 34,
         .align_x = 0,
         .align_y = 1,
+    },
+    .change_flags = UPDATE_OSD,
+};
+
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct osd_bar_style_opts
+static const m_option_t bar_style_opts[] = {
+    {"align-x", OPT_FLOAT(align_x), M_RANGE(-1.0, +1.0)},
+    {"align-y", OPT_FLOAT(align_y), M_RANGE(-1.0, +1.0)},
+    {"w", OPT_FLOAT(w), M_RANGE(1, 100)},
+    {"h", OPT_FLOAT(h), M_RANGE(0.1, 50)},
+    {"outline-size", OPT_FLOAT(outline_size), M_RANGE(0, 1000.0)},
+    {"border-size", OPT_ALIAS("osd-bar-outline-size")},
+    {"marker-scale", OPT_FLOAT(marker_scale), M_RANGE(0, 100.0)},
+    {"marker-min-size", OPT_FLOAT(marker_min_size), M_RANGE(0, 1000.0)},
+    {"marker-style", OPT_CHOICE(marker_style,
+        {"none", 0}, {"triangle", 1}, {"line", 2})},
+    {0}
+};
+
+const struct m_sub_options osd_bar_style_conf = {
+    .opts = bar_style_opts,
+    .size = sizeof(struct osd_bar_style_opts),
+    .defaults = &(const struct osd_bar_style_opts){
+        .align_y = 0.5,
+        .w = 75.0,
+        .h = 3.125,
+        .outline_size = 0.5,
+        .marker_scale = 1.3,
+        .marker_min_size = 1.6,
+        .marker_style = 1,
     },
     .change_flags = UPDATE_OSD,
 };
@@ -383,13 +414,6 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
         talloc_free(imgs);
     }
 
-    // If this is called with OSD_DRAW_SUB_ONLY or OSD_DRAW_OSD_ONLY set, assume
-    // it will always draw the complete OSD by doing multiple osd_draw() calls.
-    // OSD_DRAW_SUB_FILTER on the other hand is an evil special-case, and we
-    // must not reset the flag when it happens.
-    if (!(draw_flags & OSD_DRAW_SUB_FILTER))
-        osd->want_redraw_notification = false;
-
     double elapsed = MP_TIME_NS_TO_MS(mp_time_ns() - start_time);
     bool slow = elapsed > 5;
     mp_msg(osd->log, slow ? MSGL_DEBUG : MSGL_TRACE, "Spent %.3f ms in %s%s\n",
@@ -509,7 +533,8 @@ struct mp_osd_res osd_get_vo_res(struct osd_state *osd)
 // fills the whole video area (especially if the video is magnified, e.g. on
 // fullscreen). If compensate_par is >0, adjust the way the subtitles are
 // "stretched" on the screen, and letter-box the result. If compensate_par
-// is <0, strictly letter-box the subtitles. If it is 0, stretch them.
+// is <0, strictly letter-box the subtitles according to the supplied aspect
+// ratio. If it is 0, stretch them.
 void osd_rescale_bitmaps(struct sub_bitmaps *imgs, int frame_w, int frame_h,
                          struct mp_osd_res res, double compensate_par)
 {
@@ -518,8 +543,8 @@ void osd_rescale_bitmaps(struct sub_bitmaps *imgs, int frame_w, int frame_h,
     double xscale = (double)vidw / frame_w;
     double yscale = (double)vidh / frame_h;
     if (compensate_par < 0) {
-        assert(res.display_par);
-        compensate_par = xscale / yscale / res.display_par;
+        mp_assert(res.display_par);
+        compensate_par = xscale / yscale / res.display_par / compensate_par * -1;
     }
     if (compensate_par > 0)
         xscale /= compensate_par;
@@ -564,7 +589,7 @@ struct sub_bitmaps *sub_bitmaps_copy(struct sub_bitmap_copy_cache **p_cache,
 
     // The bitmaps being refcounted is essential for performance, and for
     // not invalidating in->parts[*].bitmap pointers.
-    assert(in->packed && in->packed->bufs[0]);
+    mp_assert(in->packed && in->packed->bufs[0]);
 
     res->packed = mp_image_new_ref(res->packed);
     talloc_steal(res, res->packed);

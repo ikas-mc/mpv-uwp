@@ -188,6 +188,8 @@ struct vo_w32_state {
 
     bool conversion_mode_init;
     bool unmaximize;
+
+    HIMC imc;
 };
 
 static inline int get_system_metrics(struct vo_w32_state *w32, int metric)
@@ -226,7 +228,7 @@ static bool check_windows10_build(DWORD build)
 // Get adjusted title bar height, only relevant for --title-bar=no
 static int get_title_bar_height(struct vo_w32_state *w32)
 {
-    assert(w32->opts->border ? !w32->opts->title_bar : IsMaximized(w32->window));
+    mp_assert(w32->opts->border ? !w32->opts->title_bar : IsMaximized(w32->window));
     UINT visible_border = 0;
     // Only available on Windows 11, check in case it's backported and breaks
     // WM_NCCALCSIZE exception for Windows 10.
@@ -538,7 +540,7 @@ static void begin_dragging(struct vo_w32_state *w32)
     // Unfortunately, the w32->current_fs value is stale because the
     // input is handled in a different thread, and we cannot wait for
     // an up-to-date value before entering the model loop if dragging
-    // needs to be kept resonsive.
+    // needs to be kept responsive.
     // Workaround this by intercepting the loop in the WM_MOVING message,
     // where the up-to-date value is available.
     SystemParametersInfoW(SPI_GETWINARRANGING, 0, &w32->win_arranging, 0);
@@ -1111,8 +1113,6 @@ static void update_maximized_state(struct vo_w32_state *w32, bool leaving_fullsc
     if (w32->parent)
         return;
 
-    update_window_style(w32);
-
     // Apply the maximized state on leaving fullscreen.
     if (w32->current_fs && !leaving_fullscreen)
         return;
@@ -1141,6 +1141,8 @@ static void update_maximized_state(struct vo_w32_state *w32, bool leaving_fullsc
             ShowWindow(w32->window, SW_SHOWNOACTIVATE);
         }
     }
+
+    update_window_style(w32);
 
     if (toggle && !w32->current_fs && !w32->opts->window_maximized) {
         w32->windowrc = w32->prev_windowrc;
@@ -1174,8 +1176,7 @@ static void update_window_state(struct vo_w32_state *w32)
 
     SetWindowPos(w32->window, w32->opts->ontop ? HWND_TOPMOST : HWND_NOTOPMOST,
                  wr.left, wr.top, rect_w(wr), rect_h(wr),
-                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
-                 (!w32->win_force_pos ? SWP_NOMOVE : 0));
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 
     // Unmaximize the window if a size change is requested because SetWindowPos
     // doesn't change the window maximized state.
@@ -1352,6 +1353,19 @@ static void set_ime_conversion_mode(const struct vo_w32_state *w32, DWORD mode)
         if (ImmGetConversionStatus(imc, NULL, &sentence_mode))
             ImmSetConversionStatus(imc, mode, sentence_mode);
         ImmReleaseContext(w32->window, imc);
+    }
+}
+
+static void update_ime_enabled(struct vo_w32_state *w32, bool enable)
+{
+    if (w32->parent)
+        return;
+
+    if (enable && w32->imc) {
+        ImmAssociateContext(w32->window, w32->imc);
+        w32->imc = NULL;
+    } else if (!enable && !w32->imc) {
+        w32->imc = ImmAssociateContext(w32->window, NULL);
     }
 }
 
@@ -1654,7 +1668,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             w32->mouse_x = x;
             w32->mouse_y = y;
             if (!should_ignore_mouse_event(w32))
-                mp_input_set_mouse_pos(w32->input_ctx, x, y);
+                mp_input_set_mouse_pos(w32->input_ctx, x, y, false);
         }
         break;
     }
@@ -1908,8 +1922,12 @@ static void run_message_loop(struct vo_w32_state *w32)
 
     // Even if the message loop somehow exits, we still have to respond to
     // external requests until termination is requested.
-    while (!w32->terminate)
+    while (!w32->terminate) {
+        mp_assert(!w32->in_dispatch);
+        w32->in_dispatch = true;
         mp_dispatch_queue_process(w32->dispatch, 1000);
+        w32->in_dispatch = false;
+    }
 }
 
 static void window_reconfig(struct vo_w32_state *w32, bool force)
@@ -1945,8 +1963,13 @@ static void window_reconfig(struct vo_w32_state *w32, bool force)
     w32->o_dheight = vo->dheight;
 
     if (!w32->parent && (!w32->window_bounds_initialized || force)) {
-        SetRect(&w32->windowrc, geo.win.x0, geo.win.y0,
-                geo.win.x0 + vo->dwidth, geo.win.y0 + vo->dheight);
+        int x0 = geo.win.x0;
+        int y0 = geo.win.y0;
+        if (!w32->opts->geometry.xy_valid && w32->window_bounds_initialized) {
+            x0 = w32->windowrc.left;
+            y0 = w32->windowrc.top;
+        }
+        SetRect(&w32->windowrc, x0, y0, x0 + vo->dwidth, y0 + vo->dheight);
         w32->prev_windowrc = w32->windowrc;
         w32->window_bounds_initialized = true;
         w32->win_force_pos = geo.flags & VO_WIN_FORCE_POS;
@@ -2048,6 +2071,8 @@ static MP_THREAD_VOID gui_thread(void *ptr)
         update_cursor_passthrough(w32);
     if (w32->opts->native_touch)
         update_native_touch(w32);
+    if (!w32->opts->input_ime)
+        update_ime_enabled(w32, false);
 
     if (SUCCEEDED(OleInitialize(NULL))) {
         ole_ok = true;
@@ -2129,7 +2154,7 @@ done:
 
 bool vo_w32_init(struct vo *vo)
 {
-    assert(!vo->w32);
+    mp_assert(!vo->w32);
 
     struct vo_w32_state *w32 = talloc_ptrtype(vo, w32);
     *w32 = (struct vo_w32_state){
@@ -2211,6 +2236,33 @@ static char **get_disp_names(struct vo_w32_state *w32)
     return data.names;
 }
 
+static bool gui_thread_control_supports(int request)
+{
+    switch (request) {
+    case VOCTRL_VO_OPTS_CHANGED:
+    case VOCTRL_GET_WINDOW_ID:
+    case VOCTRL_GET_HIDPI_SCALE:
+    case VOCTRL_GET_UNFS_WINDOW_SIZE:
+    case VOCTRL_SET_UNFS_WINDOW_SIZE:
+    case VOCTRL_SET_CURSOR_VISIBILITY:
+    case VOCTRL_KILL_SCREENSAVER:
+    case VOCTRL_RESTORE_SCREENSAVER:
+    case VOCTRL_UPDATE_WINDOW_TITLE:
+    case VOCTRL_UPDATE_PLAYBACK_STATE:
+    case VOCTRL_GET_DISPLAY_FPS:
+    case VOCTRL_GET_DISPLAY_RES:
+    case VOCTRL_GET_DISPLAY_NAMES:
+    case VOCTRL_GET_ICC_PROFILE:
+    case VOCTRL_GET_FOCUSED:
+    case VOCTRL_BEGIN_DRAGGING:
+    case VOCTRL_SHOW_MENU:
+    case VOCTRL_UPDATE_MENU:
+        return true;
+    }
+
+    return false;
+}
+
 static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
 {
     switch (request) {
@@ -2254,6 +2306,8 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
                 update_corners_pref(w32);
             } else if (changed_option == &vo_opts->native_touch) {
                 update_native_touch(w32);
+            } else if (changed_option == &vo_opts->input_ime) {
+                update_ime_enabled(w32, vo_opts->input_ime);
             } else if (changed_option == &vo_opts->geometry || changed_option == &vo_opts->autofit ||
                 changed_option == &vo_opts->autofit_smaller || changed_option == &vo_opts->autofit_larger)
             {
@@ -2369,7 +2423,9 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         mp_win32_menu_update(w32->menu_ctx, (struct mpv_node *)arg);
         return VO_TRUE;
     }
-    return VO_NOTIMPL;
+
+    // Keep gui_thread_control_supports() in sync
+    MP_ASSERT_UNREACHABLE();
 }
 
 static void do_control(void *ptr)
@@ -2401,6 +2457,8 @@ int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
             mp_dispatch_unlock(w32->dispatch);
         }
         return VO_TRUE;
+    } else if (!gui_thread_control_supports(request)) {
+        return VO_NOTIMPL;
     } else {
         int r;
         void *p[] = {w32, events, &request, arg, &r};
@@ -2439,6 +2497,11 @@ HWND vo_w32_hwnd(struct vo *vo)
 {
     struct vo_w32_state *w32 = vo->w32;
     return w32->window; // immutable, so no synchronization needed
+}
+
+void vo_w32_swapchain(struct vo *vo, void *swapchain)
+{
+    vo->display_swapchain = swapchain;
 }
 
 void vo_w32_run_on_thread(struct vo *vo, void (*cb)(void *ctx), void *ctx)

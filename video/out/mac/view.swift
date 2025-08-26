@@ -23,6 +23,7 @@ class View: NSView, CALayerDelegate {
 
     var tracker: NSTrackingArea?
     var hasMouseDown: Bool = false
+    var lastMouseDownEvent: NSEvent?
 
     override var isFlipped: Bool { return true }
     override var acceptsFirstResponder: Bool { return true }
@@ -64,17 +65,6 @@ class View: NSView, CALayerDelegate {
         return []
     }
 
-    func isURL(_ str: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$",
-                                                   options: .caseInsensitive) else {
-            return false
-        }
-        let isURL = regex.numberOfMatches(in: str,
-                                     options: [],
-                                       range: NSRange(location: 0, length: str.count))
-        return isURL > 0
-    }
-
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
         guard let types = pb.types else { return false }
@@ -88,7 +78,7 @@ class View: NSView, CALayerDelegate {
             files = str.components(separatedBy: "\n").compactMap {
                 let url = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 let path = (url as NSString).expandingTildeInPath
-                if isURL(url) { return url }
+                if url.isUrl() { return url }
                 if path.starts(with: "/") { return path }
                 return nil
             }
@@ -137,6 +127,7 @@ class View: NSView, CALayerDelegate {
     override func mouseDown(with event: NSEvent) {
         hasMouseDown = event.clickCount <= 1
         input?.processMouse(event: event)
+        lastMouseDownEvent = event
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -176,7 +167,6 @@ class View: NSView, CALayerDelegate {
         point = convertToBacking(point)
         point.y = -point.y
 
-        common.window?.updateMovableBackground(point)
         if !(common.window?.isMoving ?? false) {
             input?.setMouse(position: point)
         }

@@ -95,8 +95,7 @@ struct demux_opts {
 #define SEEK_CACHED   (1 << 3)      // allow packet cache seeks only
 #define SEEK_SATAN    (1 << 4)      // enable backward demuxing
 #define SEEK_HR       (1 << 5)      // hr-seek (this is a weak hint only)
-#define SEEK_FORCE    (1 << 6)      // ignore unseekable flag
-#define SEEK_BLOCK    (1 << 7)      // upon successfully queued seek, block readers
+#define SEEK_BLOCK    (1 << 6)      // upon successfully queued seek, block readers
                                     // (simplifies syncing multiple reader threads)
 
 // Strictness of the demuxer open format check.
@@ -144,6 +143,7 @@ typedef struct demuxer_desc {
     // If *pkt is NULL (the value when this function is called), the call
     // will be repeated.
     bool (*read_packet)(struct demuxer *demuxer, struct demux_packet **pkt);
+    void (*drop_buffers)(struct demuxer *demuxer);
     void (*close)(struct demuxer *demuxer);
     void (*seek)(struct demuxer *demuxer, double rel_seek_secs, int flags);
     void (*switched_tracks)(struct demuxer *demuxer);
@@ -200,6 +200,8 @@ typedef struct demux_attachment
 
 struct demuxer_params {
     bool is_top_level; // if true, it's not a sub-demuxer (enables cache etc.)
+    int depth;         // depth of the demuxer tree, 0 for top-level, each
+                       // nested demuxer increases depth by 1
     char *force_format;
     int matroska_num_wanted_uids;
     struct matroska_segment_uid *matroska_wanted_uids;
@@ -238,6 +240,7 @@ typedef struct demuxer {
     bool is_streaming; // implies a "slow" input, such as network or FUSE
     int stream_origin; // any STREAM_ORIGIN_* (set from source stream)
     bool access_references; // allow opening other files/URLs
+    int depth; // demuxer depth, 0 for top-level
 
     struct demux_opts *opts;
     struct m_config_cache *opts_cache;
@@ -265,6 +268,7 @@ typedef struct demuxer {
     void *priv;   // demuxer-specific internal data
     struct mpv_global *global;
     struct mp_log *log, *glog;
+    struct demux_packet_pool *packet_pool;
     struct demuxer_params *params;
 
     // internal to demux.c

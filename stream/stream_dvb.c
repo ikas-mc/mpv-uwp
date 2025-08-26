@@ -15,19 +15,20 @@
 
    Copyright notice:
 
-   This program is free software; you can redistribute it and/or modify
+   This file is part of mpv.
+
+   mpv is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 2 of the License, or
    (at your option) any later version.
 
-   This program is distributed in the hope that it will be useful,
+   mpv is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
 
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+   You should have received a copy of the GNU General Public License along
+   with mpv.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
@@ -52,6 +53,7 @@
 #include "options/m_option.h"
 #include "options/options.h"
 #include "options/path.h"
+#include "osdep/poll_wrapper.h"
 #include "osdep/threads.h"
 
 #include "dvbin.h"
@@ -72,7 +74,7 @@ const struct m_sub_options stream_dvb_conf = {
     .opts = (const m_option_t[]) {
         {"prog", OPT_STRING(cfg_prog), .flags = UPDATE_DVB_PROG},
         {"card", OPT_INT(cfg_devno), M_RANGE(0, MAX_ADAPTERS-1)},
-        {"timeout", OPT_INT(cfg_timeout), M_RANGE(1, 30)},
+        {"timeout", OPT_FLOAT(cfg_timeout), M_RANGE(0, FLT_MAX)},
         {"file", OPT_STRING(cfg_file), .flags = M_OPT_FILE},
         {"full-transponder", OPT_BOOL(cfg_full_transponder)},
         {"channel-switch-offset", OPT_INT(cfg_channel_switch_offset),
@@ -677,7 +679,7 @@ static int dvb_streaming_read(stream_t *stream, void *buffer, int size)
             if (pos || tries == 0)
                 break;
             tries--;
-            if (poll(pfds, 1, 2000) <= 0) {
+            if (mp_poll(pfds, 1, MP_TIME_S_TO_NS(2)) <= 0) {
                 MP_ERR(stream, "dvb_streaming_read: failed with "
                         "errno %d when reading %d bytes\n", errno, size - pos);
                 errno = 0;
@@ -703,10 +705,10 @@ int dvb_set_channel(stream_t *stream, unsigned int adapter, unsigned int n)
     dvb_priv_t *priv = stream->priv;
     dvb_state_t *state = priv->state;
 
-    assert(adapter < state->adapters_count);
+    mp_assert(adapter < state->adapters_count);
     int devno = state->adapters[adapter].devno;
     dvb_channels_list_t *new_list = state->adapters[adapter].list;
-    assert(n < new_list->NUM_CHANNELS);
+    mp_assert(n < new_list->NUM_CHANNELS);
     dvb_channel_t *channel = &(new_list->channels[n]);
 
     if (state->is_on) {  //the fds are already open and we have to stop the demuxers
@@ -1088,9 +1090,12 @@ dvb_state_t *dvb_get_state(stream_t *stream)
                     conf_file_name = "channels.conf.atsc";
                     break;
                 case SYS_DVBT:
-                    if (DELSYS_IS_SET(delsys_mask[f], SYS_DVBT2))
-                        continue; /* Add all channels later with T2. */
-                    conf_file_name = "channels.conf.ter";
+                    if (DELSYS_IS_SET(delsys_mask[f], SYS_DVBT2)) {
+                        // only if ter1 is present, interpret as DVB-T, else will be loaded as DVB-T2
+                        conf_file_name = "channels.conf.ter1";
+                    } else {
+                        conf_file_name = "channels.conf.ter";
+                    }
                     break;
                 case SYS_DVBT2:
                     conf_file_name = "channels.conf.ter";
@@ -1099,9 +1104,12 @@ dvb_state_t *dvb_get_state(stream_t *stream)
                     conf_file_name = "channels.conf.isdbt";
                     break;
                 case SYS_DVBS:
-                    if (DELSYS_IS_SET(delsys_mask[f], SYS_DVBS2))
-                        continue; /* Add all channels later with S2. */
-                    conf_file_name = "channels.conf.sat";
+                    if (DELSYS_IS_SET(delsys_mask[f], SYS_DVBS2)) {
+                        // only if sat1 is present, interpret as DVB-S, else will be loaded as DVB-S2
+                        conf_file_name = "channels.conf.sat1";
+                    } else {
+                        conf_file_name = "channels.conf.sat";
+                    }
                     break;
                 case SYS_DVBS2:
                     conf_file_name = "channels.conf.sat";
@@ -1110,12 +1118,11 @@ dvb_state_t *dvb_get_state(stream_t *stream)
                     continue;
                 }
 
-                void *talloc_ctx = NULL;
+                void *talloc_ctx = talloc_new(NULL);
                 char *conf_file;
                 if (priv->opts->cfg_file && priv->opts->cfg_file[0]) {
-                    conf_file = priv->opts->cfg_file;
+                    conf_file = mp_get_user_path(talloc_ctx, global, priv->opts->cfg_file);
                 } else {
-                    talloc_ctx = talloc_new(NULL);
                     conf_file = mp_find_config_file(talloc_ctx, global, conf_file_name);
                     if (conf_file) {
                         mp_verbose(log, "Ignoring other channels.conf files.\n");

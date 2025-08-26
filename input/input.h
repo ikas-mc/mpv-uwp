@@ -95,7 +95,7 @@ void mp_input_put_key_utf8(struct input_ctx *ictx, int mods, struct bstr t);
 void mp_input_put_wheel(struct input_ctx *ictx, int direction, double value);
 
 // Update mouse position (in window coordinates).
-void mp_input_set_mouse_pos(struct input_ctx *ictx, int x, int y);
+void mp_input_set_mouse_pos(struct input_ctx *ictx, int x, int y, bool quiet);
 
 // Like mp_input_set_mouse_pos(), but ignore mouse disable option.
 void mp_input_set_mouse_pos_artificial(struct input_ctx *ictx, int x, int y);
@@ -111,6 +111,27 @@ void mp_input_remove_touch_point(struct input_ctx *ictx, int id);
 // count elements. ids is an array of at least count elements to uniquely
 // identify touch points. Return the current number of touch points.
 int mp_input_get_touch_pos(struct input_ctx *ictx, int count, int *xs, int *ys, int *ids);
+
+// Set tablet tool proximity and process tool tip down/up and buttons
+void mp_input_set_tablet_tool_in_proximity(struct input_ctx *ictx, bool in_proximity);
+void mp_input_tablet_tool_down(struct input_ctx *ictx);
+void mp_input_tablet_tool_up(struct input_ctx *ictx);
+void mp_input_tablet_tool_button(struct input_ctx *ictx, int button, int state);
+void mp_input_set_tablet_pad_focus(struct input_ctx *ictx, bool focus, int buttons);
+void mp_input_tablet_pad_button(struct input_ctx *ictx, int button, int state);
+
+// Update tablet position (in window coordinates).
+void mp_input_set_tablet_pos(struct input_ctx *ictx, int x, int y, bool quiet);
+
+void mp_input_get_tablet_pos(struct input_ctx *ictx, int *x, int *y,
+                             bool *tool_in_proximity,
+                             bool *tool_down,
+                             bool *tool_stylus_btn1_pressed,
+                             bool *tool_stylus_btn2_pressed,
+                             bool *tool_stylus_btn3_pressed,
+                             bool *pad_focus,
+                             bool **pad_buttons_pressed,
+                             int *pad_buttons);
 
 // Return whether we want/accept mouse input.
 bool mp_input_mouse_enabled(struct input_ctx *ictx);
@@ -215,8 +236,9 @@ bool mp_input_use_media_keys(struct input_ctx *ictx);
 // Like mp_input_parse_cmd_strv, but also run the command.
 void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd);
 
-// Binds a command to a key.
-void mp_input_bind_key(struct input_ctx *ictx, int key, bstr command);
+// Binds a command to a key. Returns true if the bind is successful.
+bool mp_input_bind_key(struct input_ctx *ictx, const char *key, bstr command,
+                       const char *desc);
 
 void mp_input_set_repeat_info(struct input_ctx *ictx, int rate, int delay);
 

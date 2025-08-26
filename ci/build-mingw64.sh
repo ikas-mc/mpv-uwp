@@ -38,10 +38,11 @@ fam=x86_64
 cat >"$prefix_dir/crossfile" <<EOF
 [built-in options]
 buildtype = 'release'
-wrap_mode = 'nofallback'
+wrap_mode = 'nodownload'
 [binaries]
 c = ['ccache', '${CC}']
 cpp = ['ccache', '${CXX}']
+rust = ['rustc', '--target', '${RUST_TARGET}']
 ar = '${AR}'
 strip = '${TARGET}-strip'
 pkgconfig = 'pkg-config'
@@ -113,7 +114,7 @@ function build_if_missing {
 ## mpv's dependencies
 
 _iconv () {
-    local ver=1.17
+    local ver=1.18
     gettar "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-${ver}.tar.gz"
     builddir libiconv-${ver}
     ../configure --host=$TARGET $commonflags
@@ -143,6 +144,16 @@ _dav1d () {
     popd
 }
 _dav1d_mark=lib/libdav1d.dll.a
+
+_lcms2 () {
+    [ -d lcms2 ] || $gitclone https://github.com/mm2/Little-CMS.git lcms2
+    builddir lcms2
+    meson setup .. --cross-file "$prefix_dir/crossfile" \
+        -Dtests=disabled -D{utils,versionedlibs}=false
+    makeplusinstall
+    popd
+}
+_lcms2_mark=lib/liblcms2.dll.a
 
 _ffmpeg () {
     [ -d ffmpeg ] || $gitclone https://github.com/FFmpeg/FFmpeg.git ffmpeg
@@ -214,7 +225,7 @@ _libplacebo () {
     [ -d libplacebo ] || $gitclone https://code.videolan.org/videolan/libplacebo.git
     builddir libplacebo
     meson setup .. --cross-file "$prefix_dir/crossfile" \
-        -Ddemos=false -D{opengl,d3d11}=enabled
+        -Ddemos=false -D{opengl,d3d11,lcms}=enabled
     makeplusinstall
     popd
 }
@@ -242,7 +253,7 @@ _fribidi () {
 _fribidi_mark=lib/libfribidi.dll.a
 
 _harfbuzz () {
-    local ver=10.0.1
+    local ver=10.2.0
     gettar "https://github.com/harfbuzz/harfbuzz/releases/download/${ver}/harfbuzz-${ver}.tar.xz"
     builddir harfbuzz-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile" \
@@ -275,7 +286,7 @@ _luajit () {
 }
 _luajit_mark=lib/libluajit-5.1.a
 
-for x in iconv zlib shaderc spirv-cross nv-headers dav1d; do
+for x in iconv zlib shaderc spirv-cross nv-headers dav1d lcms2; do
     build_if_missing $x
 done
 if [[ "$TARGET" != "i686-"* ]]; then
@@ -320,7 +331,7 @@ if [ "$2" = pack ]; then
     dlls=(
         libgcc_*.dll lib{ssp,stdc++,winpthread}-[0-9]*.dll # compiler runtime
         av*.dll sw*.dll postproc-[0-9]*.dll lib{ass,freetype,fribidi,harfbuzz,iconv,placebo}-[0-9]*.dll
-        lib{shaderc_shared,spirv-cross-c-shared,dav1d}.dll zlib1.dll
+        lib{shaderc_shared,spirv-cross-c-shared,dav1d,lcms2}.dll zlib1.dll
     )
     if [[ -f vulkan-1.dll ]]; then
         dlls+=(vulkan-1.dll)

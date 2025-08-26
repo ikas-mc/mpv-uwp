@@ -20,11 +20,14 @@
 
 #include <stdbool.h>
 
+#include "common/common.h"
+
 struct subfn {
     int type; // STREAM_SUB/STREAM_AUDIO/STREAM_VIDEO(coverart)
     int priority;
     char *fname;
     char *lang;
+    enum track_flags flags;
 };
 
 struct mpv_global;

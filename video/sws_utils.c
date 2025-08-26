@@ -73,8 +73,8 @@ const struct m_sub_options sws_conf = {
             {"spline",          SWS_SPLINE})},
         {"lgb", OPT_FLOAT(lum_gblur), M_RANGE(0, 100.0)},
         {"cgb", OPT_FLOAT(chr_gblur), M_RANGE(0, 100.0)},
-        {"cvs", OPT_INT(chr_vshift)},
-        {"chs", OPT_INT(chr_hshift)},
+        {"cvs", OPT_INT(chr_vshift), M_RANGE(-100, 100)},
+        {"chs", OPT_INT(chr_hshift), M_RANGE(-100, 100)},
         {"ls", OPT_FLOAT(lum_sharpen), M_RANGE(-100.0, 100.0)},
         {"cs", OPT_FLOAT(chr_sharpen), M_RANGE(-100.0, 100.0)},
         {"fast", OPT_BOOL(fast)},
@@ -353,7 +353,7 @@ static struct mp_image *check_alignment(struct mp_log *log,
     // and which in most cases is not larger than decoder output. It is smaller
     // or equal to what most image allocators in mpv/ffmpeg use.
     size_t align = 32;
-    assert(align <= MP_IMAGE_BYTE_ALIGN); // or mp_image_alloc will not cut it
+    mp_assert(align <= MP_IMAGE_BYTE_ALIGN); // or mp_image_alloc will not cut it
 
     bool is_aligned = true;
     for (int p = 0; p < img->num_planes; p++) {
@@ -422,16 +422,6 @@ int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
         mp_image_copy(dst, a_dst);
 
     return 0;
-}
-
-int mp_image_swscale(struct mp_image *dst, struct mp_image *src,
-                     int my_sws_flags)
-{
-    struct mp_sws_context *ctx = mp_sws_alloc(NULL);
-    ctx->flags = my_sws_flags;
-    int res = mp_sws_scale(ctx, dst, src);
-    talloc_free(ctx);
-    return res;
 }
 
 int mp_image_sw_blur_scale(struct mp_image *dst, struct mp_image *src,

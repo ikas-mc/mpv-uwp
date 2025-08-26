@@ -147,6 +147,8 @@ struct m_property {
     void *priv;
     // Special-case: mark options for which command.c uses the option-bridge
     bool is_option;
+    // Special-case: option-bridge properties should be coalesced
+    bool coalesce;
 };
 
 struct m_property *m_property_list_find(const struct m_property *list,
@@ -220,6 +222,8 @@ struct m_sub_property {
     .type = {.type = CONF_TYPE_BOOL}, .value = {.bool_ = (f)}
 #define SUB_PROP_PTS(f) \
     .type = {.type = &m_option_type_time}, .value = {.double_ = (f)}
+#define SUB_PROP_KEYVALUE_LIST(l) \
+    .type = {.type = &m_option_type_keyvalue_list}, .value = {.keyvalue_list = (l)}
 
 int m_property_read_sub_validate(void *ctx, struct m_property *prop,
                                  int action, void *arg);

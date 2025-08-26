@@ -359,7 +359,7 @@ static int va_surface_upload(struct priv *priv, struct mp_image *va_dst,
     struct mp_image img;
     if (!va_image_map(p->ctx, &p->image, &img))
         return -1;
-    assert(sw_src->w <= img.w && sw_src->h <= img.h);
+    mp_assert(sw_src->w <= img.w && sw_src->h <= img.h);
     mp_image_set_size(&img, sw_src->w, sw_src->h); // copy only visible part
     mp_image_copy(&img, sw_src);
     va_image_unmap(p->ctx, &p->image);
@@ -555,7 +555,7 @@ static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
     present_sync_get_info(x11->present, info);
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *p = vo->priv;
     struct mp_image *mpi = frame->current;
@@ -564,7 +564,7 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
         struct mp_image *dst = p->swdec_surfaces[p->output_surface];
         if (!dst || va_surface_upload(p, dst, mpi) < 0) {
             MP_WARN(vo, "Could not upload surface.\n");
-            return;
+            goto done;
         }
         mp_image_copy_attributes(dst, mpi);
         mpi = dst;
@@ -573,6 +573,9 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
     p->output_surfaces[p->output_surface] = mpi;
 
     draw_osd(vo);
+
+done:
+    return VO_TRUE;
 }
 
 static void free_subpicture(struct priv *p, struct vaapi_osd_image *img)
@@ -825,7 +828,7 @@ static int preinit(struct vo *vo)
 
     MP_WARN(vo, "Warning: this compatibility VO is low quality and may "
                 "have issues with OSD, scaling, screenshots and more.\n"
-                "vo=gpu is the preferred choice in any case and "
+                "vo=gpu-next is the preferred choice in any case and "
                 "includes VA-API support via hwdec=vaapi or vaapi-copy.\n");
 
     return 0;

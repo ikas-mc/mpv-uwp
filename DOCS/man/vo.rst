@@ -10,12 +10,14 @@ syntax is:
 If the list has a trailing ``,``, mpv will fall back on drivers not contained
 in the list.
 
+This is an object settings list option. See `List Options`_ for details.
+
 .. note::
 
     See ``--vo=help`` for a list of compiled-in video output drivers.
 
-    The recommended output driver is ``--vo=gpu``, which is the default. All
-    other drivers are for compatibility or special purposes. If the default
+    The recommended output driver is ``--vo=gpu-next``, which is the default.
+    All other drivers are for compatibility or special purposes. If the default
     does not work, it will fallback to other drivers (in the same order as
     listed by ``--vo=help``).
 
@@ -24,6 +26,17 @@ in the list.
     rendering API), it must be explicitly specified.
 
 Available video output drivers are:
+
+``gpu-next``
+    Video renderer based on ``libplacebo``. This supports almost the same set
+    of features as ``--vo=gpu``. See `GPU renderer options`_ for a list.
+
+    Should generally be faster and higher quality, while also implementing some
+    features specific to ``gpu-next``, but some features may be intentionally
+    omitted or there may be functional differences to ``--vo=gpu``.
+    See here for a list of known differences:
+
+    https://github.com/mpv-player/mpv/wiki/GPU-Next-vs-GPU
 
 ``gpu``
     General purpose, customizable, GPU-accelerated video output driver. It
@@ -54,17 +67,6 @@ Available video output drivers are:
     support, and some macOS setups being very slow with ``rgb16`` but fast
     with ``rgb32f``. If you have problems, you can also try enabling the
     ``--gpu-dumb-mode=yes`` option.
-
-``gpu-next``
-    Experimental video renderer based on ``libplacebo``. This supports almost
-    the same set of features as ``--vo=gpu``. See `GPU renderer options`_ for a
-    list.
-
-    Should generally be faster and higher quality, but some features may still
-    be missing or misbehave. Expect (and report!) bugs. See here for a list of
-    known differences and bugs:
-
-    https://github.com/mpv-player/mpv/wiki/GPU-Next-vs-GPU
 
 ``xv`` (X11 only)
     Uses the XVideo extension to enable hardware-accelerated display. This is
@@ -300,8 +302,16 @@ Available video output drivers are:
     as ``auto-safe``. It can still work in some circumstances without ``--hwdec`` due to
     mpv's internal conversion filters, but this is not recommended as it's a needless
     extra step. Correct output depends on support from your GPU, drivers, and compositor.
-    Weston and wlroots-based compositors like Sway and Intel GPUs are known to generally
-    work.
+    This requires the compositor and mpv to support ``color-management-v1`` to
+    accurately display colorspaces that are different from the compositor
+    default (bt.601 in most cases).
+
+    .. warning::
+
+        This driver is not required for mpv to work on Wayland. ``vo=gpu``
+        and ``vo=gpu-next`` will switch to the appropriate Wayland context
+        automatically. This driver is experimental and generally lower quality
+        than ``gpu``/``gpu-next``.
 
 ``vaapi``
     Intel VA API video output driver with support for hardware decoding. Note
@@ -374,7 +384,7 @@ Available video output drivers are:
         Select how to write the pixels to the terminal.
 
         half-blocks
-            Uses unicode LOWER HALF BLOCK character to achieve higher vertical
+            Uses Unicode LOWER HALF BLOCK character to achieve higher vertical
             resolution. (Default.)
         plain
             Uses spaces. Causes vertical resolution to drop twofolds, but in
@@ -444,6 +454,14 @@ Available video output drivers are:
         and not via e.g. SSH connections.
 
         This option is not implemented on Windows.
+
+    ``--vo-kitty-auto-multiplexer-passthrough=<yes|no>`` (default: no)
+        Automatically detect terminal multiplexer to passthrough escape
+        sequences. This allows the image protocol to work in multiplexers that
+        might not support the kitty image protocol by passing through the
+        escape sequences directly to the terminal.
+
+        Currently only supports tmux and GNU screen.
 
 ``sixel``
     Graphical output for the terminal, using sixels. Tested with ``mlterm`` and

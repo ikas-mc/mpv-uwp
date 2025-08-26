@@ -68,8 +68,6 @@ struct buffer_state {
                                 // and is considered as a temporary solution;
                                 // DO NOT USE IT IN OTHER PLACES.
 
-    bool initial_unblocked;
-
     // "Push" AOs only (AOs with driver->write).
     bool recover_pause;         // non-hw_paused: needs to recover delay
     struct mp_pcm_state prepause_state;
@@ -181,7 +179,7 @@ static int ao_read_data_locked(struct ao *ao, void **data, int samples,
                                int64_t out_time_ns, bool *eof, bool pad_silence)
 {
     struct buffer_state *p = ao->buffer_state;
-    assert(!ao->driver->write);
+    mp_assert(!ao->driver->write);
 
     int pos = read_buffer(ao, data, samples, eof, pad_silence);
 
@@ -240,8 +238,8 @@ int ao_read_data_converted(struct ao *ao, struct ao_convert_fmt *fmt,
     if (!ao_need_conversion(fmt))
         return ao_read_data(ao, data, samples, out_time_ns, NULL, true, true);
 
-    assert(ao->format == fmt->src_fmt);
-    assert(ao->channels.num == fmt->channels);
+    mp_assert(ao->format == fmt->src_fmt);
+    mp_assert(ao->channels.num == fmt->channels);
 
     bool planar = af_fmt_is_planar(fmt->src_fmt);
     int planes = planar ? fmt->channels : 1;
@@ -553,10 +551,10 @@ bool init_buffer_post(struct ao *ao)
 {
     struct buffer_state *p = ao->buffer_state;
 
-    assert(ao->driver->start);
+    mp_assert(ao->driver->start);
     if (ao->driver->write) {
-        assert(ao->driver->reset);
-        assert(ao->driver->get_state);
+        mp_assert(ao->driver->reset);
+        mp_assert(ao->driver->get_state);
     }
 
     mp_mutex_init(&p->lock);
@@ -641,7 +639,7 @@ static bool ao_play_data(struct ao *ao)
     int space = state.free_samples;
     if (!space)
         return false;
-    assert(space >= 0);
+    mp_assert(space >= 0);
 
     int samples = 0;
     bool got_eof = false;
@@ -655,7 +653,7 @@ static bool ao_play_data(struct ao *ao)
             return false;
         }
         planes = (void **)mp_aframe_get_data_rw(p->temp_buf);
-        assert(planes);
+        mp_assert(planes);
 
         if (p->recover_pause) {
             samples = MPCLAMP(p->prepause_state.delay * ao->samplerate, 0, space);
@@ -713,9 +711,7 @@ static MP_THREAD_VOID ao_thread(void *arg)
     while (1) {
         mp_mutex_lock(&p->lock);
 
-        bool retry = false;
-        if (!ao->driver->initially_blocked || p->initial_unblocked)
-            retry = ao_play_data(ao);
+        bool retry = ao_play_data(ao);
 
         // Wait until the device wants us to write more data to it.
         // Fallback to guessing.
@@ -743,15 +739,4 @@ static MP_THREAD_VOID ao_thread(void *arg)
         mp_mutex_unlock(&p->pt_lock);
     }
     MP_THREAD_RETURN();
-}
-
-void ao_unblock(struct ao *ao)
-{
-    if (ao->driver->write) {
-        struct buffer_state *p = ao->buffer_state;
-        mp_mutex_lock(&p->lock);
-        p->initial_unblocked = true;
-        mp_mutex_unlock(&p->lock);
-        ao_wakeup(ao);
-    }
 }

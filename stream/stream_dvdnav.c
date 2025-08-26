@@ -72,6 +72,27 @@ struct priv {
     struct dvd_opts *opts;
 };
 
+struct dvd_opts {
+    int angle;
+    int speed;
+    char *device;
+};
+
+#define OPT_BASE_STRUCT struct dvd_opts
+
+const struct m_sub_options dvd_conf = {
+    .opts = (const struct m_option[]){
+        {"device", OPT_STRING(device), .flags = M_OPT_FILE},
+        {"speed", OPT_INT(speed)},
+        {"angle", OPT_INT(angle), M_RANGE(1, 99)},
+        {0}
+    },
+    .size = sizeof(struct dvd_opts),
+    .defaults = &(const struct dvd_opts){
+        .angle = 1,
+    },
+};
+
 #define DNE(e) [e] = # e
 static const char *const mp_dvdnav_events[] = {
     DNE(DVDNAV_BLOCK_OK),
@@ -177,7 +198,7 @@ static int dvd_probe(const char *path, const char *ext, const char *sig)
 
     char data[50];
 
-    assert(strlen(sig) <= sizeof(data));
+    mp_assert(strlen(sig) <= sizeof(data));
 
     if (fread(data, 50, 1, temp) == 1) {
         if (memcmp(data, sig, strlen(sig)) == 0)
@@ -435,8 +456,8 @@ static int control(stream_t *stream, int cmd, void *arg)
         int64_t tm = (int64_t)(d * 90000);
         if (tm < 0)
             tm = 0;
-        if (priv->duration && tm >= (priv->duration * 90))
-            tm = priv->duration * 90 - 1;
+        if (priv->duration && tm >= (int64_t)priv->duration * 90)
+            tm = (int64_t)priv->duration * 90 - 1;
         uint32_t pos, len;
         if (dvdnav_get_position(dvdnav, &pos, &len) != DVDNAV_STATUS_OK)
             break;
@@ -516,12 +537,11 @@ static int control(stream_t *stream, int cmd, void *arg)
 static void stream_dvdnav_close(stream_t *s)
 {
     struct priv *priv = s->priv;
-    dvdnav_close(priv->dvdnav);
+    if (priv->dvdnav)
+        dvdnav_close(priv->dvdnav);
     priv->dvdnav = NULL;
     if (priv->dvd_speed)
         dvd_set_speed(s, priv->filename, -1);
-    if (priv->filename)
-        free(priv->filename);
 }
 
 static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
@@ -532,17 +552,14 @@ static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
     if (!filename)
         return NULL;
 
-    if (!(priv->filename = strdup(filename)))
+    if (!(priv->filename = mp_get_user_path(priv, stream->global, filename)))
         return NULL;
 
     priv->dvd_speed = priv->opts->speed;
     dvd_set_speed(stream, priv->filename, priv->dvd_speed);
 
-    if (dvdnav_open(&(priv->dvdnav), priv->filename) != DVDNAV_STATUS_OK) {
-        free(priv->filename);
-        priv->filename = NULL;
+    if (dvdnav_open(&(priv->dvdnav), priv->filename) != DVDNAV_STATUS_OK)
         return NULL;
-    }
 
     if (!priv->dvdnav)
         return NULL;
@@ -561,6 +578,7 @@ static int open_s_internal(stream_t *stream)
     struct priv *priv, *p;
     priv = p = stream->priv;
     char *filename;
+    int ret = 0;
 
     p->opts = mp_get_config_group(stream, stream->global, &dvd_conf);
 
@@ -569,11 +587,12 @@ static int open_s_internal(stream_t *stream)
     else if (p->opts->device && p->opts->device[0])
         filename = p->opts->device;
     else
-        filename = DEFAULT_DVD_DEVICE;
+        filename = DEFAULT_OPTICAL_DEVICE;
     if (!new_dvdnav_stream(stream, filename)) {
         MP_ERR(stream, "Couldn't open DVD device: %s\n",
                 filename);
-        return STREAM_ERROR;
+        ret = STREAM_ERROR;
+        goto err;
     }
 
     if (p->track == TITLE_LONGEST) { // longest
@@ -610,11 +629,13 @@ static int open_s_internal(stream_t *stream)
         if (dvdnav_title_play(priv->dvdnav, p->track + 1) != DVDNAV_STATUS_OK) {
             MP_FATAL(stream, "dvdnav_stream, couldn't select title %d, error '%s'\n",
                    p->track, dvdnav_err_to_string(priv->dvdnav));
-            return STREAM_UNSUPPORTED;
+            ret = STREAM_UNSUPPORTED;
+            goto err;
         }
     } else {
         MP_FATAL(stream, "DVD menu support has been removed.\n");
-        return STREAM_ERROR;
+        ret = STREAM_ERROR;
+        goto err;
     }
     if (p->opts->angle > 1)
         dvdnav_angle_change(priv->dvdnav, p->opts->angle);
@@ -626,6 +647,10 @@ static int open_s_internal(stream_t *stream)
     stream->lavf_type = "mpeg";
 
     return STREAM_OK;
+
+err:
+    stream_dvdnav_close(stream);
+    return ret;
 }
 
 static int open_s(stream_t *stream)
@@ -638,7 +663,13 @@ static int open_s(stream_t *stream)
 
     priv->track = TITLE_LONGEST;
 
-    if (bstr_equals0(title, "longest") || bstr_equals0(title, "first")) {
+    struct MPOpts *opts = mp_get_config_group(stream, stream->global, &mp_opt_root);
+    int edition_id = opts->edition_id;
+    talloc_free(opts);
+
+    if (edition_id >= 0) {
+        priv->track = edition_id;
+    } else if (bstr_equals0(title, "longest") || bstr_equals0(title, "first")) {
         priv->track = TITLE_LONGEST;
     } else if (bstr_equals0(title, "menu")) {
         priv->track = TITLE_MENU;
@@ -679,7 +710,9 @@ static int ifo_dvdnav_stream_open(stream_t *stream)
     if (!stream->access_references)
         goto unsupported;
 
-    priv->track = TITLE_LONGEST;
+    struct MPOpts *opts = mp_get_config_group(NULL, stream->global, &mp_opt_root);
+    priv->track = opts->edition_id >= 0 ? opts->edition_id : TITLE_LONGEST;
+    talloc_free(opts);
 
     char *path = mp_file_get_path(priv, bstr0(stream->url));
     if (!path)

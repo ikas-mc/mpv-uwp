@@ -2,14 +2,14 @@ EMBEDDING INTO OTHER PROGRAMS (LIBMPV)
 ======================================
 
 mpv can be embedded into other programs as video/audio playback backend. The
-recommended way to do so is using libmpv. See ``libmpv/client.h`` in the mpv
+recommended way to do so is using libmpv. See ``include/mpv/client.h`` in the mpv
 source code repository. This provides a C API. Bindings for other languages
 might be available (see wiki).
 
 Since libmpv merely allows access to underlying mechanisms that can control
 mpv, further documentation is spread over a few places:
 
-- https://github.com/mpv-player/mpv/blob/master/libmpv/client.h
+- https://github.com/mpv-player/mpv/blob/master/include/mpv/client.h
 - https://mpv.io/manual/master/#options
 - https://mpv.io/manual/master/#list-of-input-commands
 - https://mpv.io/manual/master/#properties
@@ -38,7 +38,7 @@ A C plugin must export the following function::
 
     int mpv_open_cplugin(mpv_handle *handle)
 
-The plugin function will be called on loading time. This function does not
+The plugin function will be called on loading time. This function must not
 return as long as your plugin is loaded (it runs in its own thread). The
 ``handle`` will be deallocated as soon as the plugin function returns.
 
@@ -52,7 +52,8 @@ behavior.
 Within the plugin function, you can call libmpv API functions. The ``handle``
 is created by ``mpv_create_client()`` (or actually an internal equivalent),
 and belongs to you. You can call ``mpv_wait_event()`` to wait for things
-happening, and so on.
+happening, and so on. However do not call ``mpv_destroy()`` or
+``mpv_terminate_destroy()`` on this handle.
 
 Note that the player might block until your plugin calls ``mpv_wait_event()``
 for the first time. This gives you a chance to install initial hooks etc.

@@ -1,7 +1,7 @@
 #include "config.h"
 #include "hwdec.h"
 #include "libmpv_gpu.h"
-#include "libmpv/render_gl.h"
+#include "mpv/render_gl.h"
 #include "video.h"
 #include "video/out/libmpv.h"
 
@@ -92,7 +92,7 @@ static int init(struct render_backend *ctx, mpv_render_param *params)
 
     ctx->hwdec_devs = hwdec_devices_create();
     gl_video_init_hwdecs(p->renderer, p->context->ra_ctx, ctx->hwdec_devs, true);
-    ctx->driver_caps = VO_CAP_ROTATE90;
+    ctx->driver_caps = VO_CAP_ROTATE90 | VO_CAP_VFLIP;
     return 0;
 }
 
@@ -114,8 +114,10 @@ static int set_parameter(struct render_backend *ctx, mpv_render_param param)
         return 0;
     }
     case MPV_RENDER_PARAM_AMBIENT_LIGHT: {
+        MP_WARN(ctx, "MPV_RENDER_PARAM_AMBIENT_LIGHT is deprecated and might be "
+                     "removed in the future (replacement: gamma-auto.lua)\n");
         int lux = *(int *)param.data;
-        gl_video_set_ambient_lux(p->renderer, lux);
+        gl_video_set_ambient_lux(p->renderer, (double)lux);
         return 0;
     }
     default:

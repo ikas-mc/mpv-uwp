@@ -66,13 +66,16 @@ struct priv {
     struct vo_image_opts *opts;
 
     struct mp_image *current;
+    char *dir;
     int frame;
 };
 
 static bool checked_mkdir(struct vo *vo, const char *buf)
 {
-    MP_INFO(vo, "Creating output directory '%s'...\n", buf);
-    if (mkdir(buf, 0755) < 0) {
+    struct priv *p = vo->priv;
+    p->dir = mp_get_user_path(vo, vo->global, buf);
+    MP_INFO(vo, "Creating output directory '%s'...\n", p->dir);
+    if (mkdir(p->dir, 0755) < 0) {
         char *errstr = mp_strerror(errno);
         if (errno == EEXIST) {
             struct stat stat_p;
@@ -90,16 +93,19 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     return 0;
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *p = vo->priv;
     if (!frame->current)
-        return;
+        goto done;
 
     p->current = frame->current;
 
     struct mp_osd_res dim = osd_res_from_image_params(vo->params);
     osd_draw_on_image(vo->osd, dim, frame->current->pts, OSD_DRAW_SUB_ONLY, p->current);
+
+done:
+    return VO_TRUE;
 }
 
 static void flip_page(struct vo *vo)
@@ -114,8 +120,8 @@ static void flip_page(struct vo *vo)
     char *filename = talloc_asprintf(t, "%08d.%s", p->frame,
                                      image_writer_file_ext(p->opts->opts));
 
-    if (p->opts->outdir && strlen(p->opts->outdir))
-        filename = mp_path_join(t, p->opts->outdir, filename);
+    if (p->dir && strlen(p->dir))
+        filename = mp_path_join(t, p->dir, filename);
 
     MP_INFO(vo, "Saving %s\n", filename);
     write_image(p->current, p->opts->opts, filename, vo->global, vo->log, true);
@@ -152,7 +158,7 @@ const struct vo_driver video_out_image =
 {
     .description = "Write video frames to image files",
     .name = "image",
-    .untimed = true,
+    .caps = VO_CAP_UNTIMED,
     .priv_size = sizeof(struct priv),
     .preinit = preinit,
     .query_format = query_format,

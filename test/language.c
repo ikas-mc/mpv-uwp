@@ -56,33 +56,74 @@ int main(void)
     assert_int_equal(mp_match_lang((char*[]){NULL}        , "ax")            , 0);
 
     void *ta_ctx = talloc_new(NULL);
-    int start; // this is actually the position of the delimiter.
 
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en.srt"), &start)), "en");
-    assert_int_equal(start, 3);
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.eng.srt"), NULL)), "eng");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.e.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.engg.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.00.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0(NULL), NULL)), "");
+#define TEST_LANG_GUESS(filename, expected_lang, expected_start, expected_flags)  \
+    do {                                                                          \
+        int start;                                                                \
+        enum track_flags flags;                                                   \
+        bstr lang = mp_guess_lang_from_filename(bstr0(filename), &start, &flags); \
+        assert_string_equal(bstrto0(ta_ctx, lang), expected_lang);                \
+        assert_int_equal(start, expected_start);                                  \
+        assert_int_equal(flags, expected_flags);                                  \
+    } while (0)
 
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en-US.srt"), NULL)), "en-US");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en-simple.srt"), NULL)), "en-simple");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.sgn-FSL.srt"), NULL)), "sgn-FSL");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.gsw-u-sd-chzh.srt"), NULL)), "gsw-u-sd-chzh");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en-.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en-US-.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en-aaaaaaaaa.srt"), NULL)), "");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo.en-0.srt"), NULL)), "");
+    TEST_LANG_GUESS("foo.en.srt", "en", 3, 0);
+    TEST_LANG_GUESS("foo.eng.srt", "eng", 3, 0);
+    TEST_LANG_GUESS("foo.e.srt", "", -1, 0);
+    TEST_LANG_GUESS("foo.engg.srt", "", -1, 0);
+    TEST_LANG_GUESS("foo.00.srt", "", -1, 0);
+    TEST_LANG_GUESS("foo.srt", "", -1, 0);
+    TEST_LANG_GUESS(NULL, "", -1, 0);
 
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo[en].srt"), NULL)), "en");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo[en-US].srt"), NULL)), "en-US");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo[].srt"), NULL)), "");
+    TEST_LANG_GUESS("foo.en-US.srt", "en-US", 3, 0);
+    TEST_LANG_GUESS("foo.en-US.hi.srt", "en-US", 3, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo.en-US.sdh.srt", "en-US", 3, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo.en-US.forced.srt", "en-US", 3, TRACK_FORCED);
+    TEST_LANG_GUESS("foo.en-US.forced.sdh.srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo.en-US.sdh.forced.srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo.en-US.default.srt", "en-US", 3, TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo.en-US.default.sdh.srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo.en-US.sdh.default.srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo.en-simple.srt", "en-simple", 3, 0);
+    TEST_LANG_GUESS("foo.sgn-FSL.srt", "sgn-FSL", 3, 0);
+    TEST_LANG_GUESS("foo.gsw-u-sd-chzh.srt", "gsw-u-sd-chzh", 3, 0);
+    TEST_LANG_GUESS("foo.en-.srt", "", -1, 0);
+    TEST_LANG_GUESS("foo.en-US-.srt", "", -1, 0);
+    TEST_LANG_GUESS("foo.en-aaaaaaaaa.srt", "", -1, 0);
+    TEST_LANG_GUESS("foo.en-0.srt", "", -1, 0);
 
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo(en).srt"), NULL)), "en");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo(en-US).srt"), NULL)), "en-US");
-    assert_string_equal(bstrto0(ta_ctx, mp_guess_lang_from_filename(bstr0("foo().srt"), NULL)), "");
+    TEST_LANG_GUESS("foo[en].srt", "en", 3, 00);
+    TEST_LANG_GUESS("foo[en-US].srt", "en-US", 3, 0);
+    TEST_LANG_GUESS("foo[en-US][hi].srt", "en-US", 3, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo[en-US][sdh].srt", "en-US", 3, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo[en-US][forced].srt", "en-US", 3, TRACK_FORCED);
+    TEST_LANG_GUESS("foo[en-US][forced][sdh].srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo[en-US][sdh][forced].srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo[en-US][default].srt", "en-US", 3, TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo[en-US][default][sdh].srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo[en-US][sdh][default].srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo[].srt", "", -1, 0);
+
+    TEST_LANG_GUESS("foo(en).srt", "en", 3, 0);
+    TEST_LANG_GUESS("foo(en-US).srt", "en-US", 3, 0);
+    TEST_LANG_GUESS("foo(en-US)(hi).srt", "en-US", 3, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo(en-US)(sdh).srt", "en-US", 3, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo(en-US)(forced).srt", "en-US", 3, TRACK_FORCED);
+    TEST_LANG_GUESS("foo(en-US)(forced)(sdh).srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo(en-US)(sdh)(forced).srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo(en-US)(default).srt", "en-US", 3, TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo(en-US)(default)(sdh).srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo(en-US)(sdh)(default).srt", "en-US", 3, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo().srt", "", -1, 0);
+
+    TEST_LANG_GUESS("foo.hi.forced.srt", "", -1, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo.forced.hi.srt", "", -1, TRACK_HEARING_IMPAIRED | TRACK_FORCED);
+    TEST_LANG_GUESS("foo.hi.default.srt", "", -1, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo.default.hi.srt", "", -1, TRACK_HEARING_IMPAIRED | TRACK_DEFAULT);
+    TEST_LANG_GUESS("foo.default.forced.srt", "", -1, TRACK_DEFAULT | TRACK_FORCED);
+    TEST_LANG_GUESS("foo.hi.srt", "", -1, TRACK_HEARING_IMPAIRED);
+    TEST_LANG_GUESS("foo.forced.srt", "", -1, TRACK_FORCED);
+    TEST_LANG_GUESS("foo.default.srt", "", -1, TRACK_DEFAULT);
 
     talloc_free(ta_ctx);
 }

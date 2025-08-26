@@ -7,7 +7,6 @@
 -- visible.
 
 local mp = require 'mp'
-local options = require 'mp.options'
 local utils = require 'mp.utils'
 local input = require 'mp.input'
 
@@ -39,9 +38,10 @@ local o = {
     debug = false,
 
     -- Graph options and style
-    plot_perfdata = true,
-    plot_vsync_ratio = true,
-    plot_vsync_jitter = true,
+    plot_perfdata = false,
+    plot_vsync_ratio = false,
+    plot_vsync_jitter = false,
+    plot_cache = true,
     plot_tonemapping_lut = false,
     skip_frames = 5,
     global_max = true,
@@ -56,10 +56,10 @@ local o = {
     font_mono = "monospace",   -- monospaced digits are sufficient
     font_size = 20,
     font_color = "",
-    border_size = 2,
+    border_size = 1.65,
     border_color = "",
-    shadow_x_offset = 0.0,
-    shadow_y_offset = 0.0,
+    shadow_x_offset = math.huge,
+    shadow_y_offset = math.huge,
     shadow_color = "",
     alpha = "11",
     vidscale = "auto",
@@ -89,7 +89,11 @@ local o = {
 
     bindlist = "no",  -- print page 4 to the terminal on startup and quit mpv
 }
-options.read_options(o)
+
+local update_scale
+require "mp.options".read_options(o, nil, function ()
+    update_scale()
+end)
 
 local format = string.format
 local max = math.max
@@ -127,6 +131,15 @@ end
 local cache_ahead_buf, cache_speed_buf
 local perf_buffers = {}
 local process_key_binding
+
+local property_cache = {}
+
+local function get_property_cached(name, def)
+    if property_cache[name] ~= nil then
+        return property_cache[name]
+    end
+    return def
+end
 
 local function graph_add_value(graph, value)
     graph.pos = (graph.pos % graph.len) + 1
@@ -181,8 +194,15 @@ local function text_style()
             style = style .. "\\4c&H" .. o.shadow_color .. "&\\4a&H" .. o.alpha .. "&"
         end
 
-        return style .. "\\xshad" .. shadow_x_offset ..
-               "\\yshad" .. shadow_y_offset .. "}"
+        if o.shadow_x_offset < math.huge then
+            style = style .. "\\xshad" .. shadow_x_offset
+        end
+
+        if o.shadow_y_offset < math.huge then
+            style = style .. "\\yshad" .. shadow_y_offset
+        end
+
+        return style .. "}"
     end
 end
 
@@ -278,9 +298,15 @@ end
 -- exclude: Optional table containing keys which are considered invalid values
 --          for this property. Specifying this will replace empty string as
 --          default invalid value (nil is always invalid).
-local function append_property(s, prop, attr, excluded)
+-- cached : If true, use get_property_cached instead of get_property_osd
+local function append_property(s, prop, attr, excluded, cached)
     excluded = excluded or {[""] = true}
-    local ret = mp.get_property_osd(prop)
+    local ret
+    if cached then
+        ret = get_property_cached(prop)
+    else
+        ret = mp.get_property_osd(prop)
+    end
     if not ret or excluded[ret] then
         if o.debug then
             print("No value for property: " .. prop)
@@ -784,30 +810,33 @@ local function append_hdr(s, hdr, video_out)
         return
     end
 
-    local function should_show(val)
-        return val and val ~= 203 and val > 0
+    local function has(val, target)
+        return val and math.abs(val - target) > 1e-4
     end
 
     -- If we are printing video out parameters it is just display, not mastering
     local display_prefix = video_out and "Display:" or "Mastering display:"
 
     local indent = ""
+    local has_dml = has(hdr["min-luma"], 0.203) or has(hdr["max-luma"], 203)
+    local has_cll = hdr["max-cll"] and hdr["max-cll"] > 0
+    local has_fall = hdr["max-fall"] and hdr["max-fall"] > 0
 
-    if should_show(hdr["max-cll"]) or should_show(hdr["max-luma"]) then
+    if has_dml or has_cll or has_fall then
         append(s, "", {prefix="HDR10:"})
-        if hdr["min-luma"] and should_show(hdr["max-luma"]) then
+        if has_dml then
             -- libplacebo uses close to zero values as "defined zero"
             hdr["min-luma"] = hdr["min-luma"] <= 1e-6 and 0 or hdr["min-luma"]
             append(s, format("%.2g / %.0f", hdr["min-luma"], hdr["max-luma"]),
                 {prefix=display_prefix, suffix=" cd/m²", nl="", indent=indent})
             indent = o.prefix_sep .. o.prefix_sep
         end
-        if should_show(hdr["max-cll"]) then
-            append(s, hdr["max-cll"], {prefix="MaxCLL:", suffix=" cd/m²", nl="",
-                                       indent=indent})
+        if has_cll then
+            append(s, string.format("%.0f", hdr["max-cll"]), {prefix="MaxCLL:",
+                                    suffix=" cd/m²", nl="", indent=indent})
             indent = o.prefix_sep .. o.prefix_sep
         end
-        if hdr["max-fall"] and hdr["max-fall"] > 0 then
+        if has_fall then
             append(s, hdr["max-fall"], {prefix="MaxFALL:", suffix=" cd/m²", nl="",
                                         indent=indent})
         end
@@ -862,7 +891,21 @@ local function append_img_params(s, r, ro)
 
     -- Group these together to save vertical space
     append(s, r["colormatrix"], {prefix="Colormatrix:"})
-    append(s, r["primaries"], {prefix="Primaries:", nl="", indent=indent})
+    if r["prim-red-x"] or r["prim-red-y"] or
+       r["prim-green-x"] or r["prim-green-y"] or
+       r["prim-blue-x"] or r["prim-blue-y"] or
+       r["prim-white-x"] or r["prim-white-y"] then
+        append(s, string.format("[%.3f %.3f, %.3f %.3f, %.3f %.3f, %.3f %.3f]",
+                                r["prim-red-x"] or 0, r["prim-red-y"] or 0,
+                                r["prim-green-x"] or 0, r["prim-green-y"] or 0,
+                                r["prim-blue-x"] or 0, r["prim-blue-y"] or 0,
+                                r["prim-white-x"] or 0, r["prim-white-y"] or 0),
+            {prefix="Primaries:", nl="", indent=indent})
+        append(s, r["primaries"], {prefix="in", nl="", indent=" ", prefix_sep=" ",
+                                   no_prefix_markup=true})
+    else
+        append(s, r["primaries"], {prefix="Primaries:", nl="", indent=indent})
+    end
     append(s, r["gamma"], {prefix="Transfer:", nl="", indent=indent})
 end
 
@@ -899,8 +942,9 @@ local function add_video_out(s)
 
     append(s, "", {prefix="Display:", nl=o.nl .. o.nl, indent=""})
     append(s, vo, {prefix_sep="", nl="", indent=""})
+
     append_property(s, "display-names", {prefix_sep="", prefix="(", suffix=")",
-                                         no_prefix_markup=true, nl="", indent=" "})
+                    no_prefix_markup=true, nl="", indent=" "}, nil, true)
     append(s, mp.get_property_native("current-gpu-context"),
            {prefix="Context:", nl="", indent=o.prefix_sep .. o.prefix_sep})
     append_property(s, "avsync", {prefix="A-V:"})
@@ -918,7 +962,7 @@ local function add_video_out(s)
 
     local scale = nil
     if not mp.get_property_native("fullscreen") then
-        scale = mp.get_property_native("current-window-scale")
+        scale = get_property_cached("current-window-scale")
     end
 
     local od = mp.get_property_native("osd-dimensions")
@@ -967,7 +1011,7 @@ local function add_video(s)
         end
         append_property(s, "hwdec-current", {prefix="HW:", nl="",
                         indent=o.prefix_sep .. o.prefix_sep,
-                        no_prefix_markup=false, suffix=""}, {no=true, [""]=true})
+                        no_prefix_markup=false, suffix=""}, {no=true, [""]=true}, true)
     end
     local has_prefix = false
     if o.show_frame_info then
@@ -1331,7 +1375,7 @@ local function cache_stats()
     end
 
     local r_graph = nil
-    if not display_timer.oneshot and o.use_ass then
+    if not display_timer.oneshot and o.use_ass and o.plot_cache then
         r_graph = generate_graph(cache_ahead_buf, cache_ahead_buf.pos,
                                  cache_ahead_buf.len, cache_ahead_buf.max,
                                  nil, 0.8, 1)
@@ -1356,7 +1400,7 @@ local function cache_stats()
 
     local speed = info["raw-input-rate"] or 0
     local speed_graph = nil
-    if not display_timer.oneshot and o.use_ass then
+    if not display_timer.oneshot and o.use_ass and o.plot_cache then
         speed_graph = generate_graph(cache_speed_buf, cache_speed_buf.pos,
                                      cache_speed_buf.len, cache_speed_buf.max,
                                      nil, 0.8, 1)
@@ -1421,12 +1465,12 @@ cache_recorder_timer:kill()
 -- Current page and <page key>:<page function> mapping
 curr_page = o.key_page_1
 pages = {
-    [o.key_page_1] = { f = default_stats, desc = "Default" },
-    [o.key_page_2] = { f = vo_stats, desc = "Extended Frame Timings", scroll = true },
-    [o.key_page_3] = { f = cache_stats, desc = "Cache Statistics" },
-    [o.key_page_4] = { f = keybinding_info, desc = "Active Key Bindings", scroll = true },
-    [o.key_page_5] = { f = track_info, desc = "Selected Tracks Info", scroll = true },
-    [o.key_page_0] = { f = perf_stats, desc = "Internal Performance Info", scroll = true },
+    [o.key_page_1] = { idx = 1, f = default_stats, desc = "Default" },
+    [o.key_page_2] = { idx = 2, f = vo_stats, desc = "Extended Frame Timings", scroll = true },
+    [o.key_page_3] = { idx = 3, f = cache_stats, desc = "Cache Statistics" },
+    [o.key_page_4] = { idx = 4, f = keybinding_info, desc = "Active Key Bindings", scroll = true },
+    [o.key_page_5] = { idx = 5, f = track_info, desc = "Selected Tracks Info", scroll = true },
+    [o.key_page_0] = { idx = 0, f = perf_stats, desc = "Internal Performance Info", scroll = true },
 }
 
 
@@ -1476,7 +1520,7 @@ local function print_page(page, after_scroll)
     end
 end
 
-local function update_scale(osd_height)
+update_scale = function ()
     local scale_with_video
     if o.vidscale == "auto" then
         scale_with_video = mp.get_property_native("osd-scale-by-window")
@@ -1487,6 +1531,7 @@ local function update_scale(osd_height)
     -- Calculate scaled metrics.
     -- Make font_size=n the same size as --osd-font-size=n.
     local scale = 288 / 720
+    local osd_height = mp.get_property_native("osd-height")
     if not scale_with_video and osd_height > 0 then
         scale = 288 / osd_height
     end
@@ -1498,14 +1543,6 @@ local function update_scale(osd_height)
     if display_timer:is_enabled() then
         print_page(curr_page)
     end
-end
-
-local function handle_osd_height_update(_, osd_height)
-    update_scale(osd_height)
-end
-
-local function handle_osd_scale_by_window_update()
-    update_scale(mp.get_property_native("osd-height"))
 end
 
 local function clear_screen()
@@ -1559,7 +1596,6 @@ local function filter_bindings()
                 display_timer:resume()
             end
         end,
-        submit = input.terminate,
         closed = function ()
             searched_text = nil
             if display_timer:is_enabled() then
@@ -1718,26 +1754,26 @@ mp.add_key_binding(nil, "display-stats", function() process_key_binding(true) en
 mp.add_key_binding(nil, "display-stats-toggle", function() process_key_binding(false) end,
     {repeatable=false})
 
-for k, _ in pairs(pages) do
+for k, page in pairs(pages) do
     -- Single invocation key bindings for specific pages, e.g.:
     -- "e script-binding stats/display-page-2"
-    mp.add_key_binding(nil, "display-page-" .. k, function()
+    mp.add_key_binding(nil, "display-page-" .. page.idx, function()
         curr_page = k
         process_key_binding(true)
     end, {repeatable=true})
 
     -- Key bindings to toggle a specific page, e.g.:
     -- "h script-binding stats/display-page-4-toggle".
-    mp.add_key_binding(nil, "display-page-" .. k .. "-toggle", function()
+    mp.add_key_binding(nil, "display-page-" .. page.idx .. "-toggle", function()
         curr_page = k
         process_key_binding(false)
-    end, {repeatable=true})
+    end, {repeatable=false})
 end
 
 -- Reprint stats immediately when VO was reconfigured, only when toggled
 mp.register_event("video-reconfig",
     function()
-        if display_timer:is_enabled() then
+        if display_timer:is_enabled() and not display_timer.oneshot then
             print_page(curr_page)
         end
     end)
@@ -1766,5 +1802,13 @@ if o.bindlist ~= "no" then
     end)
 end
 
-mp.observe_property('osd-height', 'native', handle_osd_height_update)
-mp.observe_property('osd-scale-by-window', 'native', handle_osd_scale_by_window_update)
+mp.observe_property("osd-height", "native", update_scale)
+mp.observe_property("osd-scale-by-window", "native", update_scale)
+
+local function update_property_cache(name, value)
+    property_cache[name] = value
+end
+
+mp.observe_property('current-window-scale', 'native', update_property_cache)
+mp.observe_property('display-names', 'string', update_property_cache)
+mp.observe_property('hwdec-current', 'string', update_property_cache)

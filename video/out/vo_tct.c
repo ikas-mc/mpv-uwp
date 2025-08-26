@@ -41,7 +41,6 @@
 #define DEFAULT_WIDTH 80
 #define DEFAULT_HEIGHT 25
 
-static const bstr TERM_ESC_CLEAR_COLORS    = bstr0_lit("\033[0m");
 static const bstr TERM_ESC_COLOR256_BG     = bstr0_lit("\033[48;5");
 static const bstr TERM_ESC_COLOR256_FG     = bstr0_lit("\033[38;5");
 static const bstr TERM_ESC_COLOR24BIT_BG   = bstr0_lit("\033[48;2");
@@ -119,14 +118,14 @@ static void print_seq3(bstr *frame, struct lut_item *lut, bstr prefix,
     bstr_xappend(NULL, frame, (bstr){ lut[r].str, lut[r].width });
     bstr_xappend(NULL, frame, (bstr){ lut[g].str, lut[g].width });
     bstr_xappend(NULL, frame, (bstr){ lut[b].str, lut[b].width });
-    bstr_xappend(NULL, frame, (bstr)bstr0_lit("m"));
+    bstr_xappend0(NULL, frame, "m");
 }
 
 static void print_seq1(bstr *frame, struct lut_item *lut, bstr prefix, uint8_t c)
 {
     bstr_xappend(NULL, frame, prefix);
     bstr_xappend(NULL, frame, (bstr){ lut[c].str, lut[c].width });
-    bstr_xappend(NULL, frame, (bstr)bstr0_lit("m"));
+    bstr_xappend0(NULL, frame, "m");
 }
 
 static void print_buffer(bstr *frame)
@@ -141,7 +140,7 @@ static void write_plain(bstr *frame,
     const unsigned char *source, const int source_stride,
     bool term256, struct lut_item *lut, enum vo_tct_buffering buffering)
 {
-    assert(source);
+    mp_assert(source);
     const int tx = (dwidth - swidth) / 2;
     const int ty = (dheight - sheight) / 2;
     for (int y = 0; y < sheight; y++) {
@@ -156,11 +155,11 @@ static void write_plain(bstr *frame,
             } else {
                 print_seq3(frame, lut, TERM_ESC_COLOR24BIT_BG, r, g, b);
             }
-            bstr_xappend(NULL, frame, (bstr)bstr0_lit(" "));
+            bstr_xappend0(NULL, frame, " ");
             if (buffering <= VO_TCT_BUFFER_PIXEL)
                 print_buffer(frame);
         }
-        bstr_xappend(NULL, frame, TERM_ESC_CLEAR_COLORS);
+        bstr_xappend0(NULL, frame, TERM_ESC_CLEAR_COLORS);
         if (buffering <= VO_TCT_BUFFER_LINE)
             print_buffer(frame);
     }
@@ -172,7 +171,7 @@ static void write_half_blocks(bstr *frame,
     unsigned char *source, int source_stride,
     bool term256, struct lut_item *lut, enum vo_tct_buffering buffering)
 {
-    assert(source);
+    mp_assert(source);
     const int tx = (dwidth - swidth) / 2;
     const int ty = (dheight - sheight) / 2;
     for (int y = 0; y < sheight * 2; y += 2) {
@@ -197,7 +196,7 @@ static void write_half_blocks(bstr *frame,
             if (buffering <= VO_TCT_BUFFER_PIXEL)
                 print_buffer(frame);
         }
-        bstr_xappend(NULL, frame, TERM_ESC_CLEAR_COLORS);
+        bstr_xappend0(NULL, frame, TERM_ESC_CLEAR_COLORS);
         if (buffering <= VO_TCT_BUFFER_LINE)
             print_buffer(frame);
     }
@@ -254,14 +253,17 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     return 0;
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *p = vo->priv;
     struct mp_image *src = frame->current;
     if (!src)
-        return;
+        goto done;
     // XXX: pan, crop etc.
     mp_sws_scale(p->sws, p->frame, src);
+
+done:
+    return VO_TRUE;
 }
 
 static void flip_page(struct vo *vo)
@@ -289,7 +291,7 @@ static void flip_page(struct vo *vo)
             p->opts.term256, p->lut, p->opts.buffering);
     }
 
-    bstr_xappend(NULL, &p->frame_buf, (bstr)bstr0_lit("\n"));
+    bstr_xappend0(NULL, &p->frame_buf, "\n");
     if (p->opts.buffering <= VO_TCT_BUFFER_FRAME)
         print_buffer(&p->frame_buf);
 

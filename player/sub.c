@@ -50,7 +50,6 @@ static void reset_subtitles(struct MPContext *mpctx, struct track *track)
         sub_reset(track->d_sub);
         sub_set_play_dir(track->d_sub, mpctx->play_dir);
     }
-    term_osd_set_subs(mpctx, NULL);
 }
 
 // Only matters for subs on an image.
@@ -69,16 +68,19 @@ void reset_subtitle_state(struct MPContext *mpctx)
 {
     for (int n = 0; n < mpctx->num_tracks; n++)
         reset_subtitles(mpctx, mpctx->tracks[n]);
-    term_osd_set_subs(mpctx, NULL);
+    term_osd_clear_subs(mpctx);
 }
 
 void uninit_sub(struct MPContext *mpctx, struct track *track)
 {
     if (track && track->d_sub) {
+        int order = get_order(mpctx, track);
         reset_subtitles(mpctx, track);
         sub_select(track->d_sub, false);
-        int order = get_order(mpctx, track);
-        osd_set_sub(mpctx->osd, order, NULL);
+        if (order >= 0) {
+            term_osd_set_subs(mpctx, NULL, order);
+            osd_set_sub(mpctx->osd, order, NULL);
+        }
         sub_destroy(track->d_sub);
         track->d_sub = NULL;
     }
@@ -133,10 +135,12 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
         if (track->redraw_subs && still_image)
             sub_redecode_cached_packets(dec_sub);
 
-        // Handle displaying subtitles on terminal; never done for secondary subs
-        if (mpctx->current_track[0][STREAM_SUB] == track && !mpctx->video_out) {
+        // Handle displaying subtitles on terminal.
+        if (track->selected && track->type == STREAM_SUB && !mpctx->video_out) {
             char *text = sub_get_text(dec_sub, video_pts, SD_TEXT_TYPE_PLAIN);
-            term_osd_set_subs(mpctx, text);
+            int order = get_order(mpctx, track);
+            if (order >= 0)
+                term_osd_set_subs(mpctx, text, order);
             talloc_free(text);
         }
 
@@ -191,7 +195,7 @@ static struct attachment_list *get_all_attachments(struct MPContext *mpctx)
 
 static bool init_subdec(struct MPContext *mpctx, struct track *track)
 {
-    assert(!track->d_sub);
+    mp_assert(!track->d_sub);
 
     if (!track->demuxer || !track->stream)
         return false;
@@ -216,7 +220,7 @@ void reinit_sub(struct MPContext *mpctx, struct track *track)
     if (!track || !track->stream || track->stream->type != STREAM_SUB)
         return;
 
-    assert(!track->d_sub);
+    mp_assert(!track->d_sub);
 
     if (!init_subdec(mpctx, track)) {
         error_on_track(mpctx, track);

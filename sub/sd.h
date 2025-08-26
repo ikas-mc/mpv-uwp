@@ -67,9 +67,21 @@ bool lavc_conv_is_styled(struct lavc_conv *priv);
 void lavc_conv_reset(struct lavc_conv *priv);
 void lavc_conv_uninit(struct lavc_conv *priv);
 
+struct mp_sub_filter_opts {
+    bool sub_filter_SDH;
+    bool sub_filter_SDH_harder;
+    char **sub_filter_SDH_enclosures;
+    bool rf_enable;
+    bool rf_plain;
+    char **rf_items;
+    char **jsre_items;
+    bool rf_warn;
+};
+
 struct sd_filter {
     struct mpv_global *global;
     struct mp_log *log;
+    struct demux_packet_pool *packet_pool;
     struct mp_sub_filter_opts *opts;
     const struct sd_filter_functions *driver;
 

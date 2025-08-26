@@ -36,7 +36,6 @@ class AppHub: NSObject {
     var cocoaCb: CocoaCB?
 #endif
 
-    let MPV_PROTOCOL: String = "mpv://"
     var isApplication: Bool { return NSApp is Application }
     var isBundle: Bool { return ProcessInfo.processInfo.environment["MPVBUNDLE"] == "true" }
     var openEvents: Int = 0
@@ -100,7 +99,7 @@ class AppHub: NSObject {
 
     @objc func stopRemote() {
 #if HAVE_MACOS_MEDIA_PLAYER
-        log.verbose("Stoping RemoteCommandCenter")
+        log.verbose("Stopping RemoteCommandCenter")
         remote?.stop()
 #endif
     }
@@ -109,7 +108,6 @@ class AppHub: NSObject {
         let files = urls.map {
             if $0.isFileURL { return $0.path }
             var path = $0.absoluteString
-            if path.hasPrefix(MPV_PROTOCOL) { path.removeFirst(MPV_PROTOCOL.count) }
             return path.removingPercentEncoding ?? path
         }.sorted { (strL: String, strR: String) -> Bool in
             return strL.localizedStandardCompare(strR) == .orderedAscending
@@ -133,5 +131,9 @@ class AppHub: NSObject {
 
     func getVoConf() -> UnsafePointer<m_sub_options>? {
         return app_bridge_vo_conf()
+    }
+
+    func getRootConf() -> UnsafePointer<m_sub_options>? {
+        return app_bridge_root_conf()
     }
 }

@@ -1,6 +1,7 @@
 name: "Report a Windows Issue"
 description: "Create a report for a runtime related Windows Issue"
 labels: ["os:win"]
+type: Bug
 body:
 - type: textarea
   attributes:
@@ -26,11 +27,11 @@ body:
   attributes:
       label: "Other Information"
       description: >
-          - Windows Version: `ver` (cmd) or
-          `"$([Environment]::OSVersion)/$((gp 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name CurrentBuild).CurrentBuild).$((gp 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name UBR).UBR)"` (PowerShell)
+          - Windows Version: `cmd /c ver`
            - GPU model, driver and version
            - Source of the mpv binary
-           - If known which version of mpv introduced the problem
+           - Latest version of mpv you know without the problem
+           - The time when the problem started to happen (after updating mpv, system, driver, etc.)
            - Possible screenshot or video of visual glitches
 
           If you're not using git master or the latest release, update.
@@ -41,7 +42,8 @@ body:
           - Windows version:
           - GPU model, driver and version:
           - Source of mpv:
-          - Introduced in version:
+          - Latest known working version:
+          - Issue started after the following happened:
       render: text
   validations:
       required: true
@@ -91,7 +93,7 @@ body:
           save the terminal output to a file, and attach it to the issue.
 
 
-          In the case of a crash, please provide a backtrace, attach the approriate `.dmp` file
+          In the case of a crash, please provide a backtrace, attach the appropriate `.dmp` file
           from `%LOCALAPPDATA%\CrashDumps`.
 
 

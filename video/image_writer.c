@@ -42,6 +42,7 @@
 #include "common/msg.h"
 #include "image_writer.h"
 #include "mpv_talloc.h"
+#include "misc/lavc_compat.h"
 #include "video/fmt-conversion.h"
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -174,10 +175,28 @@ static bool write_lavc(struct image_writer_ctx *ctx, mp_image_t *image, FILE *fp
     if (!avctx)
         goto print_open_fail;
 
+    MP_VERBOSE(ctx, "Using encoder %s\n", codec->name);
+
     avctx->time_base = AV_TIME_BASE_Q;
     avctx->width = image->w;
     avctx->height = image->h;
     avctx->pix_fmt = imgfmt2pixfmt(image->imgfmt);
+
+    /*
+     * tagging avctx->bits_per_raw_sample indicates the number of significant
+     * bits. For example, if the original video was 10-bit, and the GPU buffer is
+     * 16-bit, this tells lavc that only 10 bits are significant. lavc encoders may
+     * ignore this value, but some codecs can make use of it (for example, PNG's
+     * sBIT chunk or JXL's bit depth header)
+     */
+    if (memcmp(image->fmt.bpp, ctx->original_format.bpp, sizeof(image->fmt.bpp))) {
+        int depth = 0;
+        for (int i = 0; i < MP_ARRAY_SIZE(ctx->original_format.comps); i++)
+            depth = MPMAX(depth, ctx->original_format.comps[i].size);
+        MP_DBG(ctx, "tagging bits_per_raw_sample=%d\n", depth);
+        avctx->bits_per_raw_sample = depth;
+    }
+
     if (codec->id == AV_CODEC_ID_MJPEG) {
         // Annoying deprecated garbage for the jpg encoder.
         if (image->params.repr.levels == PL_COLOR_LEVELS_FULL)
@@ -490,9 +509,12 @@ free_data:
 
 static int get_encoder_format(const AVCodec *codec, int srcfmt, bool highdepth)
 {
-    const enum AVPixelFormat *pix_fmts = codec->pix_fmts;
+    const enum AVPixelFormat *pix_fmts;
+    int ret = mp_avcodec_get_supported_config(NULL, codec,
+                                              AV_CODEC_CONFIG_PIX_FORMAT,
+                                              (const void **)&pix_fmts);
     int current = 0;
-    for (int n = 0; pix_fmts && pix_fmts[n] != AV_PIX_FMT_NONE; n++) {
+    for (int n = 0; ret >= 0 && pix_fmts && pix_fmts[n] != AV_PIX_FMT_NONE; n++) {
         int fmt = pixfmt2imgfmt(pix_fmts[n]);
         if (!fmt)
             continue;
@@ -609,7 +631,7 @@ static struct mp_image *convert_image(struct mp_image *image, int destfmt,
     if (mp_image_params_equal(&p, &image->params))
         return mp_image_new_ref(image);
 
-    mp_verbose(log, "will convert image to %s\n", mp_imgfmt_to_name(p.imgfmt));
+    mp_verbose(log, "converted: %s\n", mp_image_params_to_str(&p));
 
     struct mp_image *src = image;
     if (mp_image_crop_valid(&src->params) &&

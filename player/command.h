@@ -20,8 +20,7 @@
 
 #include <stdbool.h>
 
-#include "core.h"
-#include "libmpv/client.h"
+#include "mpv/client.h"
 #include "osdep/compiler.h"
 
 struct MPContext;
@@ -67,6 +66,11 @@ struct mp_cmd_ctx {
     void *on_completion_priv; // for free use by on_completion callback
 };
 
+struct mp_option_callback {
+    struct m_config_option *co;
+    uint64_t flags;
+};
+
 void run_command(struct MPContext *mpctx, struct mp_cmd *cmd,
                  struct mp_abort_entry *abort,
                  void (*on_completion)(struct mp_cmd_ctx *cmd),
@@ -81,8 +85,9 @@ void property_print_help(struct MPContext *mpctx);
 int mp_property_do(const char* name, int action, void* val,
                    struct MPContext *mpctx);
 
-void mp_option_change_callback(void *ctx, struct m_config_option *co, int flags,
+void mp_option_change_callback(void *ctx, struct m_config_option *co, uint64_t flags,
                                bool self_update);
+void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *callback);
 
 void mp_notify(struct MPContext *mpctx, int event, void *arg);
 void mp_notify_property(struct MPContext *mpctx, const char *property);
@@ -102,6 +107,7 @@ enum {
     MP_EVENT_WIN_STATE,
     MP_EVENT_WIN_STATE2,
     MP_EVENT_FOCUS,
+    MP_EVENT_AMBIENT_LIGHTING_CHANGED,
     MP_EVENT_CHANGE_PLAYLIST,
     MP_EVENT_CORE_IDLE,
     MP_EVENT_DURATION_UPDATE,
@@ -121,11 +127,5 @@ void mp_hook_add(struct MPContext *mpctx, char *client, int64_t client_id,
 void mark_seek(struct MPContext *mpctx);
 
 void mp_abort_cache_dumping(struct MPContext *mpctx);
-
-// U+25CB WHITE CIRCLE
-// U+25CF BLACK CIRCLE
-#define WHITE_CIRCLE "\xe2\x97\x8b"
-#define BLACK_CIRCLE "\xe2\x97\x8f"
-char *mp_format_track_metadata(void *ctx, struct track *t, bool add_lang);
 
 #endif /* MPLAYER_COMMAND_H */

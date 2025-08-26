@@ -15,12 +15,13 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <libmpv/client.h>
-
 #include "common.h"
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
+    if (size > MAX_FUZZ_SIZE)
+        return 0;
+
     size_t value_len;
     switch (MPV_FORMAT)
     {
@@ -52,6 +53,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     size_t name_len = strnlen(name, size - value_len);
     if (!name_len || name_len != size - value_len - 1)
         return 0;
+
+    set_fontconfig_sysroot();
 
     mpv_handle *ctx = mpv_create();
     if (!ctx)

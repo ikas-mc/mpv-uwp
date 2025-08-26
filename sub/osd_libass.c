@@ -119,6 +119,7 @@ static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
     create_ass_renderer(osd, ass);
 
     ASS_Track *track = ass->track;
+    struct mp_osd_render_opts *opts = osd->opts;
     if (!track)
         track = ass->track = ass_new_track(ass->library);
 
@@ -127,9 +128,14 @@ static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
     track->WrapStyle = 1; // end-of-line wrapping instead of smart wrapping
     track->Kerning = true;
     track->ScaledBorderAndShadow = true;
+    ass_set_shaper(ass->render, opts->osd_shaper);
 #if LIBASS_VERSION >= 0x01600010
     ass_track_set_feature(track, ASS_FEATURE_WRAP_UNICODE, 1);
 #endif
+#if LIBASS_VERSION >= 0x01703010
+    ass_configure_prune(track, opts->osd_ass_prune_delay * 1000.0);
+#endif
+    ass_set_cache_limits(ass->render, opts->osd_glyph_limit, opts->osd_bitmap_max_size);
     update_playres(ass, &obj->vo_res);
 }
 
@@ -170,7 +176,7 @@ static ASS_Event *add_osd_ass_event(ASS_Track *track, const char *style,
     event->Duration = 100;
     event->Style = find_style(track, style, 0);
     event->ReadOrder = n;
-    assert(event->Text == NULL);
+    mp_assert(event->Text == NULL);
     if (text)
         event->Text = strdup(text);
     return event;
@@ -184,9 +190,7 @@ static void clear_ass(struct ass_state *ass)
 
 void osd_get_function_sym(char *buffer, size_t buffer_size, int osd_function)
 {
-    // 0xFF is never valid UTF-8, so we can use it to escape OSD symbols.
-    // (Same trick as OSD_ASS_0/OSD_ASS_1.)
-    snprintf(buffer, buffer_size, "\xFF%c", osd_function);
+    snprintf(buffer, buffer_size, OSD_CODEPOINTS_ESCAPE "%c", osd_function);
 }
 
 void osd_mangle_ass(bstr *dst, const char *in, bool replace_newlines)
@@ -195,20 +199,29 @@ void osd_mangle_ass(bstr *dst, const char *in, bool replace_newlines)
     bool escape_ass = true;
     while (*in) {
         // As used by osd_get_function_sym().
-        if (in[0] == '\xFF' && in[1]) {
+        size_t len = strlen(OSD_CODEPOINTS_ESCAPE);
+        if (!strncmp(in, OSD_CODEPOINTS_ESCAPE, len) && in[len]) {
             bstr_xappend(NULL, dst, bstr0(ASS_USE_OSD_FONT));
-            mp_append_utf8_bstr(NULL, dst, OSD_CODEPOINTS + in[1]);
+            mp_append_utf8_bstr(NULL, dst, OSD_CODEPOINTS + in[len]);
             bstr_xappend(NULL, dst, bstr0("{\\r}"));
-            in += 2;
+            in += len + 1;
             continue;
         }
-        if (*in == OSD_ASS_0[0] || *in == OSD_ASS_1[0]) {
-            escape_ass = *in == OSD_ASS_1[0];
-            in += 1;
+        len = strlen(OSD_ASS_0);
+        if (!strncmp(in, OSD_ASS_0, len)) {
+            escape_ass = false;
+            in += len;
             continue;
         }
-        if (*in == TERM_MSG_0[0]) {
-            in += 1;
+        len = strlen(OSD_ASS_1);
+        if (!strncmp(in, OSD_ASS_1, len)) {
+            escape_ass = true;
+            in += len;
+            continue;
+        }
+        len = strlen(TERM_MSG_0);
+        if (!strncmp(in, TERM_MSG_0, len)) {
+            in += len;
             continue;
         }
         if (escape_ass && *in == '{')
@@ -363,6 +376,7 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
                             float *o_border)
 {
     struct mp_osd_render_opts *opts = osd->opts;
+    struct osd_bar_style_opts *bar_opts = opts->osd_bar_style;
 
     create_ass_track(osd, obj, &obj->ass);
     ASS_Track *track = obj->ass.track;
@@ -380,19 +394,20 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
     // and each bar ass event gets its own opaque box - breaking the bar.
     style->BorderStyle = 1; // outline
 
-    *o_w = track->PlayResX * (opts->osd_bar_w / 100.0);
-    *o_h = track->PlayResY * (opts->osd_bar_h / 100.0);
+    *o_w = track->PlayResX * (bar_opts->w / 100.0);
+    *o_h = track->PlayResY * (bar_opts->h / 100.0);
 
-    style->Outline = opts->osd_bar_outline_size;
+    style->Outline = bar_opts->outline_size;
     // Rendering with shadow is broken (because there's more than one shape)
     style->Shadow = 0;
+    style->Blur = 0;
 
     style->Alignment = 5;
 
     *o_border = style->Outline;
 
-    *o_x = get_align(opts->osd_bar_align_x, track->PlayResX, *o_w, *o_border);
-    *o_y = get_align(opts->osd_bar_align_y, track->PlayResY, *o_h, *o_border);
+    *o_x = get_align(bar_opts->align_x, track->PlayResX, *o_w, *o_border);
+    *o_y = get_align(bar_opts->align_y, track->PlayResY, *o_h, *o_border);
 }
 
 static void update_progbar(struct osd_state *osd, struct osd_object *obj)
@@ -468,14 +483,15 @@ static void update_progbar(struct osd_state *osd, struct osd_object *obj)
     // the "hole"
     ass_draw_rect_ccw(d, 0, 0, width, height);
 
+    struct osd_bar_style_opts *bar_opts = osd->opts->osd_bar_style;
     // chapter marks
-    if (osd->opts->osd_bar_marker_style) {
+    if (bar_opts->marker_style) {
         for (int n = 0; n < obj->progbar_state.num_stops; n++) {
             float s = obj->progbar_state.stops[n] * width;
-            float size = MPMAX(border * osd->opts->osd_bar_marker_scale,
-                               osd->opts->osd_bar_marker_min_size);
+            float size = MPMAX(border * bar_opts->marker_scale,
+                               bar_opts->marker_min_size);
 
-            if (osd->opts->osd_bar_marker_style == 2 &&
+            if (bar_opts->marker_style == 2 &&
                 s > size / 2 && s < width - size / 2)
             { // line
                 ass_draw_rect_cw(d, s - size / 2, 0, s + size / 2, height);
@@ -669,8 +685,14 @@ static void append_ass(struct ass_state *ass, struct mp_osd_res *res,
 struct sub_bitmaps *osd_object_get_bitmaps(struct osd_state *osd,
                                            struct osd_object *obj, int format)
 {
-    if (obj->type == OSDTYPE_OSD && obj->osd_changed)
-        update_osd(osd, obj);
+    if (obj->type == OSDTYPE_OSD) {
+        if (obj->osd_changed) {
+            update_osd(osd, obj);
+        } else {
+            mp_require(obj->ass_packer);
+            goto done;
+        }
+    }
 
     if (!obj->ass_packer)
         obj->ass_packer = mp_ass_packer_alloc(obj);
@@ -688,6 +710,7 @@ struct sub_bitmaps *osd_object_get_bitmaps(struct osd_state *osd,
         }
     }
 
+done:;
     struct sub_bitmaps out_imgs = {0};
     mp_ass_packer_pack(obj->ass_packer, obj->ass_imgs, obj->num_externals + 1,
                        obj->changed, false, format, &out_imgs);

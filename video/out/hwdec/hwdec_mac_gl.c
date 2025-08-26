@@ -19,6 +19,8 @@
 
 #include <assert.h>
 
+#include "osdep/mac/compat.h"
+
 #include <IOSurface/IOSurface.h>
 #include <CoreVideo/CoreVideo.h>
 #include <OpenGL/OpenGL.h>
@@ -95,7 +97,7 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
 
     const bool planar = CVPixelBufferIsPlanar(p->pbuf);
     const int planes  = CVPixelBufferGetPlaneCount(p->pbuf);
-    assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
+    mp_assert((planar && planes == p->desc.num_planes) || p->desc.num_planes == 1);
 
     GLenum gl_target = GL_TEXTURE_RECTANGLE;
 

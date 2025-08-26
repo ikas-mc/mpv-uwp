@@ -35,9 +35,9 @@
 #include "misc/bstr.h"
 #include "core.h"
 #include "client.h"
-#include "libmpv/client.h"
-#include "libmpv/render.h"
-#include "libmpv/stream_cb.h"
+#include "mpv/client.h"
+#include "mpv/render.h"
+#include "mpv/stream_cb.h"
 
 extern const struct mp_scripting mp_scripting_lua;
 extern const struct mp_scripting mp_scripting_cplugin;
@@ -89,8 +89,9 @@ static void run_script(struct mp_script_args *arg)
     if (arg->backend->load(arg) < 0)
         MP_ERR(arg, "Could not load %s script %s\n", arg->backend->name, arg->filename);
 
-    mpv_destroy(arg->client);
+    mpv_handle *client = arg->client;
     talloc_free(arg);
+    mpv_destroy(client);
 }
 
 static MP_THREAD_VOID script_thread(void *p)
@@ -240,16 +241,20 @@ static char **list_script_files(void *talloc_ctx, char *path)
 static void load_builtin_script(struct MPContext *mpctx, int slot, bool enable,
                                 const char *fname)
 {
-    assert(slot < MP_ARRAY_SIZE(mpctx->builtin_script_ids));
+    mp_assert(slot < MP_ARRAY_SIZE(mpctx->builtin_script_ids));
     int64_t *pid = &mpctx->builtin_script_ids[slot];
-    if (*pid > 0 && !mp_client_id_exists(mpctx, *pid))
+    if (*pid > 0 && !mp_client_id_exists(mpctx, *pid)) {
+        MP_DBG(mpctx, "Client for script %s is no longer alive. Marking as unloaded.\n", fname);
         *pid = 0; // died
+    }
     if ((*pid > 0) != enable) {
         if (enable) {
             *pid = mp_load_script(mpctx, fname);
         } else {
             char *name = mp_tprintf(22, "@%"PRIi64, *pid);
+            MP_DBG(mpctx, "Unloading script %s (disabled by option)\n", fname);
             mp_client_send_event(mpctx, name, 0, MPV_EVENT_SHUTDOWN, NULL);
+            // note: there is no synchronization of script exit
         }
     }
 }
@@ -263,6 +268,8 @@ void mp_load_builtin_scripts(struct MPContext *mpctx)
     load_builtin_script(mpctx, 4, mpctx->opts->lua_load_auto_profiles,
                         "@auto_profiles.lua");
     load_builtin_script(mpctx, 5, mpctx->opts->lua_load_select, "@select.lua");
+    load_builtin_script(mpctx, 6, mpctx->opts->lua_load_positioning, "@positioning.lua");
+    load_builtin_script(mpctx, 7, mpctx->opts->lua_load_commands, "@commands.lua");
 }
 
 bool mp_load_scripts(struct MPContext *mpctx)

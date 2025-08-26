@@ -27,6 +27,7 @@
 #include "ao_coreaudio_chmap.h"
 #include "ao_coreaudio_properties.h"
 #include "ao_coreaudio_utils.h"
+#include "osdep/mac/compat.h"
 
 // The timeout for stopping the audio unit after being reset. This allows the
 // device to sleep after playback paused. The duration is chosen to match the
@@ -135,7 +136,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     return CONTROL_UNKNOWN;
 }
 
-static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd);
+static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd, AudioChannelLayout *layout, size_t layout_size);
 static void init_physical_format(struct ao *ao);
 static void reinit_latency(struct ao *ao);
 static bool register_hotplug_cb(struct ao *ao);
@@ -177,8 +178,13 @@ static int init(struct ao *ao)
 
     AudioStreamBasicDescription asbd;
     ca_fill_asbd(ao, &asbd);
+    size_t layout_size;
+    AudioChannelLayout *layout = ca_get_acl(ao, &layout_size);
 
-    if (!init_audiounit(ao, asbd))
+    bool r = init_audiounit(ao, asbd, layout, layout_size);
+    talloc_free(layout);
+
+    if (!r)
         goto coreaudio_error;
 
     reinit_latency(ao);
@@ -269,10 +275,9 @@ static void init_physical_format(struct ao *ao)
 
 coreaudio_error:
     talloc_free(tmp);
-    return;
 }
 
-static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd)
+static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd, AudioChannelLayout *layout, size_t layout_size)
 {
     OSStatus err;
     uint32_t size;
@@ -315,6 +320,13 @@ static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd)
                                sizeof(p->device));
     CHECK_CA_ERROR_L(coreaudio_error_audiounit,
                      "can't link audio unit to selected device");
+
+    err = AudioUnitSetProperty(p->audio_unit,
+                               kAudioOutputUnitProperty_ChannelMap,
+                               kAudioUnitScope_Global, 0, layout, layout_size);
+
+    CHECK_CA_ERROR_L(coreaudio_error_audiounit,
+                     "unable to set the input channel layout on the audio unit");
 
     AURenderCallbackStruct render_cb = (AURenderCallbackStruct) {
         .inputProc       = render_cb_lpcm,
@@ -490,7 +502,7 @@ static bool register_hotplug_cb(struct ao *ao)
         AudioObjectPropertyAddress addr = {
             hotplug_properties[i],
             kAudioObjectPropertyScopeGlobal,
-            kAudioObjectPropertyElementMaster
+            kAudioObjectPropertyElementMain
         };
         err = AudioObjectAddPropertyListener(
             kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao);
@@ -520,7 +532,7 @@ static void unregister_hotplug_cb(struct ao *ao)
         AudioObjectPropertyAddress addr = {
             hotplug_properties[i],
             kAudioObjectPropertyScopeGlobal,
-            kAudioObjectPropertyElementMaster
+            kAudioObjectPropertyElementMain
         };
         err = AudioObjectRemovePropertyListener(
             kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao);

@@ -32,31 +32,38 @@
 #include "osdep/poll_wrapper.h"
 #include "osdep/timer.h"
 #include "present_sync.h"
+#include "video/out/gpu/video.h"
 #include "wayland_common.h"
 #include "win_state.h"
 
 // Generated from wayland-protocols
 #include "idle-inhibit-unstable-v1.h"
+#include "text-input-unstable-v3.h"
 #include "linux-dmabuf-unstable-v1.h"
 #include "presentation-time.h"
+#include "xdg-activation-v1.h"
 #include "xdg-decoration-unstable-v1.h"
 #include "xdg-shell.h"
 #include "viewporter.h"
 #include "content-type-v1.h"
 #include "single-pixel-buffer-v1.h"
 #include "fractional-scale-v1.h"
-
-// Vendored protocols
-#include "xx-color-management-v4.h"
-
-#if HAVE_DRM
-#include <drm_fourcc.h>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
-#endif
+#include "tablet-unstable-v2.h"
 
 #if HAVE_WAYLAND_PROTOCOLS_1_32
 #include "cursor-shape-v1.h"
+#endif
+
+#if HAVE_WAYLAND_PROTOCOLS_1_38
+#include "fifo-v1.h"
+#endif
+
+#if HAVE_WAYLAND_PROTOCOLS_1_41
+#include "color-management-v1.h"
+#endif
+
+#if HAVE_WAYLAND_PROTOCOLS_1_44
+#include "color-representation-v1.h"
 #endif
 
 #if WAYLAND_VERSION_MAJOR > 1 || WAYLAND_VERSION_MINOR >= 22
@@ -67,16 +74,16 @@
 #define CLOCK_MONOTONIC_RAW 4
 #endif
 
-#ifndef XDG_TOPLEVEL_STATE_SUSPENDED
+#ifndef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
 #define XDG_TOPLEVEL_STATE_SUSPENDED 9
 #endif
 
 // From the fractional scale protocol
 #define WAYLAND_SCALE_FACTOR 120.0
 
-// From the xx color management protocol
-#define WAYLAND_COLOR_FACTOR 10000
-
+// From the color management protocol
+#define WAYLAND_COLOR_FACTOR 1000000
+#define WAYLAND_MIN_LUM_FACTOR 10000
 
 enum resizing_constraint {
     MP_WIDTH_CONSTRAINT = 1,
@@ -190,11 +197,20 @@ struct vo_wayland_seat {
     struct wl_keyboard *keyboard;
     struct wl_pointer  *pointer;
     struct wl_touch    *touch;
-    struct wl_data_device *dnd_ddev;
-    /* TODO: unvoid this if required wayland protocols is bumped to 1.32+ */
-    void *cursor_shape_device;
+    struct zwp_tablet_seat_v2 *tablet_seat;
+    struct wl_list tablet_list;
+    struct wl_list tablet_tool_list;
+    struct wl_list tablet_pad_list;
+    struct wl_data_device *data_device;
+    struct vo_wayland_data_offer *pending_offer;
+    struct vo_wayland_data_offer *dnd_offer;
+    struct vo_wayland_data_offer *selection_offer;
+    struct wl_data_source *data_source;
+    struct vo_wayland_text_input *text_input;
+    struct wp_cursor_shape_device_v1 *cursor_shape_device;
     uint32_t pointer_enter_serial;
     uint32_t pointer_button_serial;
+    uint32_t last_serial;
     struct xkb_keymap  *xkb_keymap;
     struct xkb_state   *xkb_state;
     uint32_t keyboard_code;
@@ -212,19 +228,89 @@ struct vo_wayland_seat {
     int num_keyboard_entering_keys;
 };
 
+struct vo_wayland_tablet {
+    struct vo_wayland_state *wl;
+    struct vo_wayland_seat *seat;
+    struct zwp_tablet_v2 *tablet;
+    struct wl_list link;
+};
+
+struct vo_wayland_tablet_tool {
+    struct vo_wayland_state *wl;
+    struct vo_wayland_seat *seat;
+    struct zwp_tablet_tool_v2 *tablet_tool;
+    struct wp_cursor_shape_device_v1 *cursor_shape_device;
+    uint32_t proximity_serial;
+    struct wl_list link;
+};
+
+struct vo_wayland_tablet_pad {
+    struct vo_wayland_state *wl;
+    struct vo_wayland_seat *seat;
+    struct zwp_tablet_pad_v2 *tablet_pad;
+    uint32_t buttons; // number of buttons on pad
+    struct wl_list tablet_pad_group_list;
+    struct wl_list link;
+};
+
+struct vo_wayland_tablet_pad_group {
+    struct vo_wayland_state *wl;
+    struct vo_wayland_seat *seat;
+    struct zwp_tablet_pad_group_v2 *tablet_pad_group;
+    struct wl_list tablet_pad_ring_list;
+    struct wl_list tablet_pad_strip_list;
+    struct wl_list link;
+};
+
+struct vo_wayland_tablet_pad_ring {
+    struct vo_wayland_state *wl;
+    struct vo_wayland_seat *seat;
+    struct zwp_tablet_pad_ring_v2 *tablet_pad_ring;
+    struct wl_list link;
+};
+
+struct vo_wayland_tablet_pad_strip {
+    struct vo_wayland_state *wl;
+    struct vo_wayland_seat *seat;
+    struct zwp_tablet_pad_strip_v2 *tablet_pad_strip;
+    struct wl_list link;
+};
+
 struct vo_wayland_tranche {
     struct drm_format *compositor_formats;
     int num_compositor_formats;
-    uint32_t *planar_formats;
-    int num_planar_formats;
     dev_t device_id;
     struct wl_list link;
+};
+
+struct vo_wayland_data_offer {
+    struct wl_data_offer *offer;
+    int action; // actually enum mp_dnd_action
+    char *mime_type;
+    int fd;
+    int mime_score;
+    bool offered_plain_text;
+};
+
+struct vo_wayland_text_input {
+    struct zwp_text_input_v3 *text_input;
+    uint32_t serial;
+    char *commit_string;
+    bool has_focus;
+};
+
+struct vo_wayland_preferred_description_info {
+    struct vo_wayland_state *wl;
+    bool is_parametric;
+    struct pl_color_space csp;
+    void *icc_file;
+    uint32_t icc_size;
 };
 
 static bool single_output_spanned(struct vo_wayland_state *wl);
 
 static int check_for_resize(struct vo_wayland_state *wl, int edge_pixels,
-                            enum xdg_toplevel_resize_edge *edge);
+                            enum xdg_toplevel_resize_edge *edges);
 static int get_mods(struct vo_wayland_seat *seat);
 static int greatest_common_divisor(int a, int b);
 static int handle_round(int scale, int n);
@@ -234,16 +320,20 @@ static int spawn_cursor(struct vo_wayland_state *wl);
 static void add_feedback(struct vo_wayland_feedback_pool *fback_pool,
                          struct wp_presentation_feedback *fback);
 static void apply_keepaspect(struct vo_wayland_state *wl, int *width, int *height);
-static void get_planar_drm_formats(struct vo_wayland_state *wl);
+static void get_compositor_preferred_description(struct vo_wayland_state *wl, bool parametric);
 static void get_shape_device(struct vo_wayland_state *wl, struct vo_wayland_seat *s);
 static void guess_focus(struct vo_wayland_state *wl);
 static void handle_key_input(struct vo_wayland_seat *s, uint32_t key, uint32_t state, bool no_emit);
-static void initialize_color_maps(struct vo_wayland_state *wl);
-static void prepare_resize(struct vo_wayland_state *wl);
 static void remove_feedback(struct vo_wayland_feedback_pool *fback_pool,
                             struct wp_presentation_feedback *fback);
 static void remove_output(struct vo_wayland_output *out);
+static void remove_tablet(struct vo_wayland_tablet *tablet);
+static void remove_tablet_tool(struct vo_wayland_tablet_tool *tablet_tool);
+static void remove_tablet_pad(struct vo_wayland_tablet_pad *tablet_pad);
 static void remove_seat(struct vo_wayland_seat *seat);
+static void seat_create_data_device(struct vo_wayland_seat *seat);
+static void seat_create_tablet_seat(struct vo_wayland_state *wl, struct vo_wayland_seat *seat);
+static void seat_create_text_input(struct vo_wayland_seat *seat);
 static void request_decoration_mode(struct vo_wayland_state *wl, uint32_t mode);
 static void rescale_geometry(struct vo_wayland_state *wl, double old_scale);
 static void set_geometry(struct vo_wayland_state *wl, bool resize);
@@ -251,6 +341,7 @@ static void set_surface_scaling(struct vo_wayland_state *wl);
 static void update_output_scaling(struct vo_wayland_state *wl);
 static void update_output_geometry(struct vo_wayland_state *wl, struct mp_rect old_geometry,
                                    struct mp_rect old_output_geometry);
+static void destroy_offer(struct vo_wayland_data_offer *o);
 
 /* Wayland listener boilerplate */
 static void pointer_handle_enter(void *data, struct wl_pointer *pointer,
@@ -259,6 +350,7 @@ static void pointer_handle_enter(void *data, struct wl_pointer *pointer,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
 
     s->pointer_enter_serial = serial;
     set_cursor_visibility(s, wl->cursor_visible);
@@ -267,8 +359,8 @@ static void pointer_handle_enter(void *data, struct wl_pointer *pointer,
     wl->mouse_x = handle_round(wl->scaling, wl_fixed_to_int(sx));
     wl->mouse_y = handle_round(wl->scaling, wl_fixed_to_int(sy));
 
-    if (!wl->toplevel_configured)
-        mp_input_set_mouse_pos(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y);
+    mp_input_set_mouse_pos(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y,
+                           wl->toplevel_configured);
     wl->toplevel_configured = false;
 }
 
@@ -277,6 +369,7 @@ static void pointer_handle_leave(void *data, struct wl_pointer *pointer,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
     mp_input_put_key(wl->vo->input_ctx, MP_KEY_MOUSE_LEAVE);
 }
 
@@ -289,8 +382,8 @@ static void pointer_handle_motion(void *data, struct wl_pointer *pointer,
     wl->mouse_x = handle_round(wl->scaling, wl_fixed_to_int(sx));
     wl->mouse_y = handle_round(wl->scaling, wl_fixed_to_int(sy));
 
-    if (!wl->toplevel_configured)
-        mp_input_set_mouse_pos(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y);
+    mp_input_set_mouse_pos(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y,
+                           wl->toplevel_configured);
     wl->toplevel_configured = false;
 }
 
@@ -300,6 +393,7 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
     state = state == WL_POINTER_BUTTON_STATE_PRESSED ? MP_KEY_STATE_DOWN
                                                      : MP_KEY_STATE_UP;
 
@@ -327,7 +421,6 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
     } else {
         button = 0;
     }
-
     enum xdg_toplevel_resize_edge edges;
     if (!mp_input_test_dragging(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y) &&
         !wl->locked_size && (button == MP_MBTN_LEFT) && (state == MP_KEY_STATE_DOWN) &&
@@ -446,6 +539,7 @@ static void touch_handle_down(void *data, struct wl_touch *wl_touch,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
     // Note: the position should still be saved here for VO dragging handling.
     wl->mouse_x = handle_round(wl->scaling, wl_fixed_to_int(x_w));
     wl->mouse_y = handle_round(wl->scaling, wl_fixed_to_int(y_w));
@@ -470,6 +564,7 @@ static void touch_handle_up(void *data, struct wl_touch *wl_touch,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
     mp_input_remove_touch_point(wl->vo->input_ctx, id);
     wl->last_button_seat = NULL;
 }
@@ -515,6 +610,467 @@ static const struct wl_touch_listener touch_listener = {
     touch_handle_cancel,
     touch_handle_shape,
     touch_handle_orientation,
+};
+
+static void tablet_handle_name(void *data,
+                               struct zwp_tablet_v2 *zwp_tablet_v2,
+                               const char *name)
+{
+}
+
+static void tablet_handle_id(void *data,
+                             struct zwp_tablet_v2 *zwp_tablet_v2,
+                             uint32_t vid,
+                             uint32_t pid)
+{
+}
+
+static void tablet_handle_path(void *data,
+                               struct zwp_tablet_v2 *zwp_tablet_v2,
+                               const char *path)
+{
+}
+
+static void tablet_handle_done(void *data,
+                               struct zwp_tablet_v2 *zwp_tablet_v2)
+{
+}
+
+static void tablet_handle_removed(void *data,
+                                  struct zwp_tablet_v2 *zwp_tablet_v2)
+{
+    struct vo_wayland_tablet *tablet = data;
+    remove_tablet(tablet);
+}
+
+static const struct zwp_tablet_v2_listener tablet_listener = {
+    tablet_handle_name,
+    tablet_handle_id,
+    tablet_handle_path,
+    tablet_handle_done,
+    tablet_handle_removed,
+};
+
+static void tablet_tool_handle_type(void *data,
+                                    struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                    uint32_t tool_type)
+{
+}
+
+static void tablet_tool_handle_hardware_serial(void *data,
+                                               struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                               uint32_t hardware_serial_hi,
+                                               uint32_t hardware_serial_lo)
+{
+}
+
+static void tablet_tool_handle_hardware_id_wacom(void *data,
+                                                 struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                                 uint32_t hardware_id_hi,
+                                                 uint32_t hardware_id_lo)
+{
+}
+
+static void tablet_tool_handle_capability(void *data,
+                                          struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                          uint32_t capability)
+{
+}
+
+static void tablet_tool_handle_done(void *data,
+                                    struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2)
+{
+}
+
+static void tablet_tool_handle_removed(void *data,
+                                       struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    remove_tablet_tool(tablet_tool);
+}
+
+static void tablet_tool_handle_proximity_in(void *data,
+                                            struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                            uint32_t serial,
+                                            struct zwp_tablet_v2 *tablet,
+                                            struct wl_surface *surface)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    tablet_tool->proximity_serial = serial;
+    set_cursor_visibility(tablet_tool->seat, true);
+    mp_input_set_tablet_tool_in_proximity(tablet_tool->wl->vo->input_ctx, true);
+}
+
+static void tablet_tool_handle_proximity_out(void *data,
+                                             struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    mp_input_set_tablet_tool_in_proximity(tablet_tool->wl->vo->input_ctx, false);
+}
+
+static void tablet_tool_handle_down(void *data,
+                                    struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                    uint32_t serial)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    struct vo_wayland_state *wl = tablet_tool->wl;
+    tablet_tool->seat->last_serial = serial;
+
+    enum xdg_toplevel_resize_edge edge;
+    if (!mp_input_test_dragging(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y) &&
+        !wl->locked_size && !wl->opts->border &&
+        check_for_resize(wl, wl->opts->wl_edge_pixels_touch, &edge))
+    {
+        xdg_toplevel_resize(wl->xdg_toplevel, tablet_tool->seat->seat, serial, edge);
+        return;
+    }
+
+    tablet_tool->seat->pointer_button_serial = serial;
+    wl->last_button_seat = tablet_tool->seat;
+    mp_input_tablet_tool_down(tablet_tool->wl->vo->input_ctx);
+}
+
+static void tablet_tool_handle_up(void *data,
+                                  struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    tablet_tool->seat->wl->last_button_seat = NULL;
+    mp_input_tablet_tool_up(tablet_tool->wl->vo->input_ctx);
+}
+
+static void tablet_tool_handle_motion(void *data,
+                                      struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                      wl_fixed_t x,
+                                      wl_fixed_t y)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    struct vo_wayland_state *wl = tablet_tool->wl;
+
+    wl->mouse_x = handle_round(wl->scaling, wl_fixed_to_int(x));
+    wl->mouse_y = handle_round(wl->scaling, wl_fixed_to_int(y));
+
+    mp_input_set_tablet_pos(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y,
+                           wl->toplevel_configured);
+    wl->toplevel_configured = false;
+}
+
+static void tablet_tool_handle_pressure(void *data,
+                                        struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                        uint32_t pressure)
+{
+}
+
+static void tablet_tool_handle_distance(void *data,
+                                        struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                        uint32_t distance)
+{
+}
+
+static void tablet_tool_handle_tilt(void *data,
+                                    struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                    wl_fixed_t tilt_x,
+                                    wl_fixed_t tilt_y)
+{
+}
+
+static void tablet_tool_handle_rotation(void *data,
+                                        struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                        wl_fixed_t degrees)
+{
+}
+
+static void tablet_tool_handle_slider(void *data,
+                                      struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                      int32_t position)
+{
+}
+
+static void tablet_tool_handle_wheel(void *data,
+                                     struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                     wl_fixed_t degrees,
+                                     int32_t clicks)
+{
+}
+
+static void tablet_tool_handle_button(void *data,
+                                      struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                      uint32_t serial,
+                                      uint32_t button,
+                                      uint32_t state)
+{
+    struct vo_wayland_tablet_tool *tablet_tool = data;
+    tablet_tool->seat->last_serial = serial;
+
+    switch (button) {
+    case BTN_STYLUS:
+        button = MP_KEY_TABLET_TOOL_STYLUS_BTN1;
+        break;
+    case BTN_STYLUS2:
+        button = MP_KEY_TABLET_TOOL_STYLUS_BTN2;
+        break;
+    case BTN_STYLUS3:
+        button = MP_KEY_TABLET_TOOL_STYLUS_BTN3;
+        break;
+    default:
+        button = 0;
+        break;
+    }
+
+    state = state == ZWP_TABLET_TOOL_V2_BUTTON_STATE_PRESSED
+        ? MP_KEY_STATE_DOWN
+        : MP_KEY_STATE_UP;
+
+    mp_input_tablet_tool_button(tablet_tool->wl->vo->input_ctx, button, state);
+}
+
+static void tablet_tool_handle_frame(void *data,
+                                     struct zwp_tablet_tool_v2 *zwp_tablet_tool_v2,
+                                     uint32_t time)
+{
+}
+
+static const struct zwp_tablet_tool_v2_listener tablet_tool_listener = {
+    tablet_tool_handle_type,
+    tablet_tool_handle_hardware_serial,
+    tablet_tool_handle_hardware_id_wacom,
+    tablet_tool_handle_capability,
+    tablet_tool_handle_done,
+    tablet_tool_handle_removed,
+    tablet_tool_handle_proximity_in,
+    tablet_tool_handle_proximity_out,
+    tablet_tool_handle_down,
+    tablet_tool_handle_up,
+    tablet_tool_handle_motion,
+    tablet_tool_handle_pressure,
+    tablet_tool_handle_distance,
+    tablet_tool_handle_tilt,
+    tablet_tool_handle_rotation,
+    tablet_tool_handle_slider,
+    tablet_tool_handle_wheel,
+    tablet_tool_handle_button,
+    tablet_tool_handle_frame,
+};
+
+static void tablet_tool_pad_group_handle_buttons(void *data,
+                                                 struct zwp_tablet_pad_group_v2 *zwp_tablet_pad_group_v2,
+                                                 struct wl_array *buttons)
+{
+}
+
+static void tablet_tool_pad_group_handle_ring(void *data,
+                                              struct zwp_tablet_pad_group_v2 *zwp_tablet_pad_group_v2,
+                                              struct zwp_tablet_pad_ring_v2 *ring)
+{
+    struct vo_wayland_tablet_pad_group *tablet_pad_group = data;
+    struct vo_wayland_state *wl = tablet_pad_group->wl;
+    struct vo_wayland_seat *seat = tablet_pad_group->seat;
+
+    struct vo_wayland_tablet_pad_ring *tablet_pad_ring = talloc_zero(seat, struct vo_wayland_tablet_pad_ring);
+    tablet_pad_ring->wl = wl;
+    tablet_pad_ring->seat = seat;
+    tablet_pad_ring->tablet_pad_ring = ring;
+    wl_list_insert(&tablet_pad_group->tablet_pad_ring_list, &tablet_pad_ring->link);
+}
+
+static void tablet_tool_pad_group_handle_strip(void *data,
+                                               struct zwp_tablet_pad_group_v2 *zwp_tablet_pad_group_v2,
+                                               struct zwp_tablet_pad_strip_v2 *strip)
+{
+    struct vo_wayland_tablet_pad_group *tablet_pad_group = data;
+    struct vo_wayland_state *wl = tablet_pad_group->wl;
+    struct vo_wayland_seat *seat = tablet_pad_group->seat;
+
+    struct vo_wayland_tablet_pad_strip *tablet_pad_strip = talloc_zero(seat, struct vo_wayland_tablet_pad_strip);
+    tablet_pad_strip->wl = wl;
+    tablet_pad_strip->seat = seat;
+    tablet_pad_strip->tablet_pad_strip = strip;
+    wl_list_insert(&tablet_pad_group->tablet_pad_strip_list, &tablet_pad_strip->link);
+}
+
+static void tablet_tool_pad_group_handle_modes(void *data,
+                                               struct zwp_tablet_pad_group_v2 *zwp_tablet_pad_group_v2,
+                                               uint32_t modes)
+{
+}
+
+static void tablet_tool_pad_group_handle_done(void *data,
+                                              struct zwp_tablet_pad_group_v2 *zwp_tablet_pad_group_v2)
+{
+}
+
+static void tablet_tool_pad_group_handle_mode_switch(void *data,
+                                                     struct zwp_tablet_pad_group_v2 *zwp_tablet_pad_group_v2,
+                                                     uint32_t time,
+                                                     uint32_t serial,
+                                                     uint32_t mode)
+{
+}
+
+static const struct zwp_tablet_pad_group_v2_listener tablet_pad_group_listener = {
+    tablet_tool_pad_group_handle_buttons,
+    tablet_tool_pad_group_handle_ring,
+    tablet_tool_pad_group_handle_strip,
+    tablet_tool_pad_group_handle_modes,
+    tablet_tool_pad_group_handle_done,
+    tablet_tool_pad_group_handle_mode_switch
+};
+
+static void tablet_pad_handle_group(void *data,
+                                    struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2,
+                                    struct zwp_tablet_pad_group_v2 *pad_group)
+{
+    struct vo_wayland_tablet_pad *tablet_pad = data;
+    struct vo_wayland_state *wl = tablet_pad->wl;
+    struct vo_wayland_seat *seat = tablet_pad->seat;
+
+    struct vo_wayland_tablet_pad_group *tablet_pad_group = talloc_zero(seat, struct vo_wayland_tablet_pad_group);
+    tablet_pad_group->wl = wl;
+    tablet_pad_group->seat = seat;
+    tablet_pad_group->tablet_pad_group = pad_group;
+    wl_list_init(&tablet_pad_group->tablet_pad_ring_list);
+    wl_list_init(&tablet_pad_group->tablet_pad_strip_list);
+    zwp_tablet_pad_group_v2_add_listener(pad_group, &tablet_pad_group_listener, tablet_pad_group);
+    wl_list_insert(&tablet_pad->tablet_pad_group_list, &tablet_pad_group->link);
+}
+
+static void tablet_pad_handle_path(void *data,
+                                   struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2,
+                                   const char *path)
+{
+}
+
+static void tablet_pad_handle_buttons(void *data,
+                                      struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2,
+                                      uint32_t buttons)
+{
+    struct vo_wayland_tablet_pad *tablet_pad = data;
+    struct vo_wayland_state *wl = tablet_pad->wl;
+
+    MP_VERBOSE(wl, "       %i buttons\n", buttons);
+    tablet_pad->buttons = buttons;
+}
+
+static void tablet_pad_handle_done(void *data,
+                                   struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2)
+{
+}
+
+static void tablet_pad_handle_button(void *data,
+                                     struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2,
+                                     uint32_t time,
+                                     uint32_t button,
+                                     uint32_t state)
+{
+    struct vo_wayland_tablet_pad *tablet_pad = data;
+    struct vo_wayland_state *wl = tablet_pad->wl;
+
+    state = state == ZWP_TABLET_PAD_V2_BUTTON_STATE_PRESSED
+        ? MP_KEY_STATE_DOWN
+        : MP_KEY_STATE_UP;
+
+    mp_input_tablet_pad_button(wl->vo->input_ctx, button, state);
+}
+
+static void tablet_pad_handle_enter(void *data,
+                                    struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2,
+                                    uint32_t serial,
+                                    struct zwp_tablet_v2 *tablet,
+                                    struct wl_surface *surface)
+{
+    struct vo_wayland_tablet_pad *tablet_pad = data;
+    struct vo_wayland_state *wl = tablet_pad->wl;
+    mp_input_set_tablet_pad_focus(wl->vo->input_ctx, true, tablet_pad->buttons);
+}
+
+static void tablet_pad_handle_leave(void *data,
+                                    struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2,
+                                    uint32_t serial,
+                                    struct wl_surface *surface)
+{
+    struct vo_wayland_tablet_pad *tablet_pad = data;
+    struct vo_wayland_state *wl = tablet_pad->wl;
+    mp_input_set_tablet_pad_focus(wl->vo->input_ctx, false, 0);
+}
+
+static void tablet_pad_handle_removed(void *data,
+                                      struct zwp_tablet_pad_v2 *zwp_tablet_pad_v2)
+{
+    struct vo_wayland_tablet_pad *tablet_pad = data;
+    remove_tablet_pad(tablet_pad);
+}
+
+static const struct zwp_tablet_pad_v2_listener tablet_pad_listener = {
+    tablet_pad_handle_group,
+    tablet_pad_handle_path,
+    tablet_pad_handle_buttons,
+    tablet_pad_handle_done,
+    tablet_pad_handle_button,
+    tablet_pad_handle_enter,
+    tablet_pad_handle_leave,
+    tablet_pad_handle_removed,
+};
+
+static void tablet_handle_added(void *data,
+                                struct zwp_tablet_seat_v2 *zwp_tablet_seat_v2,
+                                struct zwp_tablet_v2 *id)
+{
+    struct vo_wayland_seat *seat = data;
+    struct vo_wayland_state *wl = seat->wl;
+
+    MP_VERBOSE(wl, "Adding tablet %p\n", id);
+
+    struct vo_wayland_tablet *tablet = talloc_zero(seat, struct vo_wayland_tablet);
+    tablet->wl = wl;
+    tablet->seat = seat;
+    tablet->tablet = id;
+    zwp_tablet_v2_add_listener(id, &tablet_listener, tablet);
+    wl_list_insert(&seat->tablet_list, &tablet->link);
+}
+
+static void tablet_tool_handle_added(void *data,
+                                     struct zwp_tablet_seat_v2 *zwp_tablet_seat_v2,
+                                     struct zwp_tablet_tool_v2 *id)
+{
+    struct vo_wayland_seat *seat = data;
+    struct vo_wayland_state *wl = seat->wl;
+
+    MP_VERBOSE(wl, "Adding tablet tool %p\n", id);
+
+    struct vo_wayland_tablet_tool *tablet_tool = talloc_zero(seat, struct vo_wayland_tablet_tool);
+    tablet_tool->wl = wl;
+    tablet_tool->seat = seat;
+    tablet_tool->tablet_tool = id;
+#if HAVE_WAYLAND_PROTOCOLS_1_32
+    if (wl->cursor_shape_manager)
+        tablet_tool->cursor_shape_device = wp_cursor_shape_manager_v1_get_tablet_tool_v2(
+            wl->cursor_shape_manager, tablet_tool->tablet_tool);
+#endif
+    zwp_tablet_tool_v2_add_listener(tablet_tool->tablet_tool, &tablet_tool_listener, tablet_tool);
+    wl_list_insert(&seat->tablet_tool_list, &tablet_tool->link);
+}
+
+static void tablet_pad_handle_added(void *data,
+                                    struct zwp_tablet_seat_v2 *zwp_tablet_seat_v2,
+                                    struct zwp_tablet_pad_v2 *id)
+{
+    struct vo_wayland_seat *seat = data;
+    struct vo_wayland_state *wl = seat->wl;
+
+    MP_VERBOSE(wl, "Adding tablet pad %p\n", id);
+
+    struct vo_wayland_tablet_pad *tablet_pad = talloc_zero(seat, struct vo_wayland_tablet_pad);
+    tablet_pad->wl = wl;
+    tablet_pad->seat = seat;
+    tablet_pad->tablet_pad = id;
+    wl_list_init(&tablet_pad->tablet_pad_group_list);
+    zwp_tablet_pad_v2_add_listener(id, &tablet_pad_listener, tablet_pad);
+    wl_list_insert(&seat->tablet_pad_list, &tablet_pad->link);
+}
+
+static const struct zwp_tablet_seat_v2_listener tablet_seat_listener = {
+    tablet_handle_added,
+    tablet_tool_handle_added,
+    tablet_pad_handle_added,
 };
 
 static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
@@ -567,6 +1123,7 @@ static void keyboard_handle_enter(void *data, struct wl_keyboard *wl_keyboard,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
     s->has_keyboard_input = true;
     s->keyboard_entering = true;
     guess_focus(wl);
@@ -581,6 +1138,7 @@ static void keyboard_handle_leave(void *data, struct wl_keyboard *wl_keyboard,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
     s->has_keyboard_input = false;
     s->keyboard_code = 0;
     s->mpkey = 0;
@@ -594,6 +1152,7 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
                                 uint32_t state)
 {
     struct vo_wayland_seat *s = data;
+    s->last_serial = serial;
     handle_key_input(s, key, state, false);
 }
 
@@ -604,6 +1163,7 @@ static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboar
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    s->last_serial = serial;
 
     if (s->xkb_state) {
         xkb_state_update_mask(s->xkb_state, mods_depressed, mods_latched,
@@ -689,12 +1249,15 @@ static void data_offer_handle_offer(void *data, struct wl_data_offer *offer,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    struct vo_wayland_data_offer *o = s->pending_offer;
     int score = mp_event_get_mime_type_score(wl->vo->input_ctx, mime_type);
-    if (score > wl->dnd_mime_score && wl->opts->drag_and_drop != -2) {
-        wl->dnd_mime_score = score;
-        talloc_replace(wl, wl->dnd_mime_type, mime_type);
-        MP_VERBOSE(wl, "Given DND offer with mime type %s\n", wl->dnd_mime_type);
+    if (o->offer && score > o->mime_score && wl->opts->drag_and_drop != -2) {
+        o->mime_score = score;
+        talloc_replace(wl, o->mime_type, mime_type);
+        MP_VERBOSE(wl, "Given data offer with mime type %s\n", o->mime_type);
     }
+    if (o->offer && !o->offered_plain_text)
+        o->offered_plain_text = !strcmp(mime_type, "text/plain;charset=utf-8");
 }
 
 static void data_offer_source_actions(void *data, struct wl_data_offer *offer, uint32_t source_actions)
@@ -705,12 +1268,13 @@ static void data_offer_action(void *data, struct wl_data_offer *wl_data_offer, u
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    struct vo_wayland_data_offer *o = s->dnd_offer;
     if (dnd_action && wl->opts->drag_and_drop != -2) {
         if (wl->opts->drag_and_drop >= 0) {
-            wl->dnd_action = wl->opts->drag_and_drop;
+            o->action = wl->opts->drag_and_drop;
         } else {
-            wl->dnd_action = dnd_action & WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY ?
-                             DND_REPLACE : DND_APPEND;
+            o->action = dnd_action & WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY ?
+                            DND_REPLACE : DND_APPEND;
         }
 
         static const char * const dnd_action_names[] = {
@@ -719,7 +1283,7 @@ static void data_offer_action(void *data, struct wl_data_offer *wl_data_offer, u
             [DND_INSERT_NEXT] = "DND_INSERT_NEXT",
         };
 
-        MP_VERBOSE(wl, "DND action is %s\n", dnd_action_names[wl->dnd_action]);
+        MP_VERBOSE(wl, "DND action is %s\n", dnd_action_names[o->action]);
     }
 }
 
@@ -733,11 +1297,10 @@ static void data_device_handle_data_offer(void *data, struct wl_data_device *wl_
                                           struct wl_data_offer *id)
 {
     struct vo_wayland_seat *s = data;
-    struct vo_wayland_state *wl = s->wl;
-    if (wl->dnd_offer)
-        wl_data_offer_destroy(wl->dnd_offer);
+    struct vo_wayland_data_offer *o = s->pending_offer;
+    destroy_offer(o);
 
-    wl->dnd_offer = id;
+    o->offer = id;
     wl_data_offer_add_listener(id, &data_offer_listener, s);
 }
 
@@ -748,17 +1311,24 @@ static void data_device_handle_enter(void *data, struct wl_data_device *wl_ddev,
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
-    if (wl->dnd_offer != id) {
+    struct vo_wayland_data_offer *o = s->pending_offer;
+    if (o->offer != id) {
         MP_FATAL(wl, "DND offer ID mismatch!\n");
         return;
     }
 
+    mp_assert(!s->dnd_offer->offer);
+    int action = s->dnd_offer->action;
+    *s->dnd_offer = *s->pending_offer;
+    *s->pending_offer = (struct vo_wayland_data_offer){.fd = -1};
+    o = s->dnd_offer;
+    o->action = action;
     if (wl->opts->drag_and_drop != -2) {
         wl_data_offer_set_actions(id, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY |
                                       WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE,
                                       WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
-        wl_data_offer_accept(id, serial, wl->dnd_mime_type);
-        MP_VERBOSE(wl, "Accepting DND offer with mime type %s\n", wl->dnd_mime_type);
+        wl_data_offer_accept(id, serial, o->mime_type);
+        MP_VERBOSE(wl, "Accepting DND offer with mime type %s\n", o->mime_type);
     }
 
 }
@@ -767,19 +1337,20 @@ static void data_device_handle_leave(void *data, struct wl_data_device *wl_ddev)
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    struct vo_wayland_data_offer *o = s->dnd_offer;
 
-    if (wl->dnd_offer) {
-        if (wl->dnd_fd != -1)
+    if (o->offer) {
+        if (o->fd != -1)
             return;
-        wl_data_offer_destroy(wl->dnd_offer);
-        wl->dnd_offer = NULL;
+        wl_data_offer_destroy(o->offer);
+        o->offer = NULL;
     }
 
     if (wl->opts->drag_and_drop != -2) {
-        MP_VERBOSE(wl, "Releasing DND offer with mime type %s\n", wl->dnd_mime_type);
-        if (wl->dnd_mime_type)
-            TA_FREEP(&wl->dnd_mime_type);
-        wl->dnd_mime_score = 0;
+        MP_VERBOSE(wl, "Releasing DND offer with mime type %s\n", o->mime_type);
+        if (o->mime_type)
+            TA_FREEP(&o->mime_type);
+        o->mime_score = 0;
     }
 }
 
@@ -787,14 +1358,15 @@ static void data_device_handle_motion(void *data, struct wl_data_device *wl_ddev
                                       uint32_t time, wl_fixed_t x, wl_fixed_t y)
 {
     struct vo_wayland_seat *s = data;
-    struct vo_wayland_state *wl = s->wl;
-    wl_data_offer_accept(wl->dnd_offer, time, wl->dnd_mime_type);
+    struct vo_wayland_data_offer *o = s->dnd_offer;
+    wl_data_offer_accept(o->offer, time, o->mime_type);
 }
 
 static void data_device_handle_drop(void *data, struct wl_data_device *wl_ddev)
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
+    struct vo_wayland_data_offer *o = s->dnd_offer;
 
     int pipefd[2];
 
@@ -804,12 +1376,12 @@ static void data_device_handle_drop(void *data, struct wl_data_device *wl_ddev)
     }
 
     if (wl->opts->drag_and_drop != -2) {
-        MP_VERBOSE(wl, "Receiving DND offer with mime %s\n", wl->dnd_mime_type);
-        wl_data_offer_receive(wl->dnd_offer, wl->dnd_mime_type, pipefd[1]);
+        MP_VERBOSE(wl, "Receiving DND offer with mime %s\n", o->mime_type);
+        wl_data_offer_receive(o->offer, o->mime_type, pipefd[1]);
     }
 
     close(pipefd[1]);
-    wl->dnd_fd = pipefd[0];
+    o->fd = pipefd[0];
 }
 
 static void data_device_handle_selection(void *data, struct wl_data_device *wl_ddev,
@@ -817,13 +1389,34 @@ static void data_device_handle_selection(void *data, struct wl_data_device *wl_d
 {
     struct vo_wayland_seat *s = data;
     struct vo_wayland_state *wl = s->wl;
-
-    if (wl->dnd_offer) {
-        wl_data_offer_destroy(wl->dnd_offer);
-        wl->dnd_offer = NULL;
-        MP_VERBOSE(wl, "Received a new DND offer. Releasing the previous offer.\n");
+    struct vo_wayland_data_offer *o = s->pending_offer;
+    if (o->offer != id) {
+        MP_FATAL(wl, "Selection offer ID mismatch!\n");
+        return;
     }
 
+    if (s->selection_offer->offer) {
+        destroy_offer(s->selection_offer);
+        MP_VERBOSE(wl, "Received a new selection offer. Releasing the previous offer.\n");
+    }
+    *s->selection_offer = *s->pending_offer;
+    *s->pending_offer = (struct vo_wayland_data_offer){.fd = -1};
+    if (!id)
+        return;
+
+    int pipefd[2];
+
+    if (pipe2(pipefd, O_CLOEXEC) == -1) {
+        MP_ERR(wl, "Failed to create selection pipe!\n");
+        return;
+    }
+
+    o = s->selection_offer;
+    // Only receive plain text for now, may expand later.
+    if (o->offered_plain_text)
+        wl_data_offer_receive(o->offer, "text/plain;charset=utf-8", pipefd[1]);
+    close(pipefd[1]);
+    o->fd = pipefd[0];
 }
 
 static const struct wl_data_device_listener data_device_listener = {
@@ -833,6 +1426,160 @@ static const struct wl_data_device_listener data_device_listener = {
     data_device_handle_motion,
     data_device_handle_drop,
     data_device_handle_selection,
+};
+
+static void data_source_handle_target(void *data, struct wl_data_source *wl_data_source,
+                                      const char *mime_type)
+{
+}
+
+static void data_source_handle_send(void *data, struct wl_data_source *wl_data_source,
+                                    const char *mime_type, int32_t fd)
+{
+    struct vo_wayland_seat *s = data;
+    struct vo_wayland_state *wl = s->wl;
+    int score = mp_event_get_mime_type_score(wl->vo->input_ctx, mime_type);
+    if (score >= 0) {
+        struct pollfd fdp = { .fd = fd, .events = POLLOUT };
+        if (poll(&fdp, 1, 0) <= 0)
+            goto cleanup;
+        if (fdp.revents & (POLLERR | POLLHUP)) {
+            MP_VERBOSE(wl, "data source send aborted (write error)\n");
+            goto cleanup;
+        }
+
+        if (fdp.revents & POLLOUT) {
+            ssize_t data_written = write(fd, wl->selection_text.start, wl->selection_text.len);
+            if (data_written == -1) {
+                MP_VERBOSE(wl, "data source send aborted (write error: %s)\n", mp_strerror(errno));
+            } else {
+                MP_VERBOSE(wl, "%zu bytes written to the data source fd\n", data_written);
+            }
+        }
+    }
+
+cleanup:
+    close(fd);
+}
+
+static void data_source_handle_cancelled(void *data, struct wl_data_source *wl_data_source)
+{
+    // This can happen when another client sets selection, which invalidates the current source.
+    struct vo_wayland_seat *s = data;
+    wl_data_source_destroy(wl_data_source);
+    s->data_source = NULL;
+}
+
+static void data_source_handle_dnd_drop_performed(void *data, struct wl_data_source *wl_data_source)
+{
+}
+
+static void data_source_handle_dnd_finished(void *data, struct wl_data_source *wl_data_source)
+{
+}
+
+static void data_source_handle_action(void *data, struct wl_data_source *wl_data_source,
+                                      uint32_t dnd_action)
+{
+}
+
+static const struct wl_data_source_listener data_source_listener = {
+    data_source_handle_target,
+    data_source_handle_send,
+    data_source_handle_cancelled,
+    data_source_handle_dnd_drop_performed,
+    data_source_handle_dnd_finished,
+    data_source_handle_action,
+};
+
+static void enable_ime(struct vo_wayland_text_input *ti)
+{
+    if (!ti->has_focus)
+        return;
+
+    zwp_text_input_v3_enable(ti->text_input);
+    zwp_text_input_v3_set_content_type(
+        ti->text_input,
+        ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+        ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+    zwp_text_input_v3_set_cursor_rectangle(ti->text_input, 0, 0, 0, 0);
+    zwp_text_input_v3_commit(ti->text_input);
+    ti->serial++;
+}
+
+static void disable_ime(struct vo_wayland_text_input *ti)
+{
+    zwp_text_input_v3_disable(ti->text_input);
+    zwp_text_input_v3_commit(ti->text_input);
+    ti->serial++;
+}
+
+static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+                             struct wl_surface *surface)
+{
+    struct vo_wayland_seat *s = data;
+    struct vo_wayland_text_input *ti = s->text_input;
+    struct vo_wayland_state *wl = s->wl;
+
+    ti->has_focus = true;
+
+    if (!wl->opts->input_ime)
+        return;
+
+    enable_ime(ti);
+}
+
+static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+                             struct wl_surface *surface)
+{
+    struct vo_wayland_seat *s = data;
+    struct vo_wayland_text_input *ti = s->text_input;
+
+    ti->has_focus = false;
+    disable_ime(ti);
+}
+
+static void text_input_preedit_string(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+                                      const char *text, int32_t cursor_begin, int32_t cursor_end)
+{
+}
+
+static void text_input_commit_string(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+                                     const char *text)
+{
+    struct vo_wayland_seat *s = data;
+    struct vo_wayland_text_input *ti = s->text_input;
+
+    talloc_replace(ti, ti->commit_string, text);
+}
+
+static void text_input_delete_surrounding_text(void *data,
+                                               struct zwp_text_input_v3 *zwp_text_input_v3,
+                                               uint32_t before_length, uint32_t after_length)
+{
+}
+
+static void text_input_done(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+                            uint32_t serial)
+{
+    struct vo_wayland_seat *s = data;
+    struct vo_wayland_text_input *ti = s->text_input;
+    struct vo_wayland_state *wl = s->wl;
+
+    if (ti->serial == serial && ti->commit_string)
+        mp_input_put_key_utf8(wl->vo->input_ctx, 0, bstr0(ti->commit_string));
+
+    if (ti->commit_string)
+        TA_FREEP(&ti->commit_string);
+}
+
+static const struct zwp_text_input_v3_listener text_input_listener = {
+    text_input_enter,
+    text_input_leave,
+    text_input_preedit_string,
+    text_input_commit_string,
+    text_input_delete_surrounding_text,
+    text_input_done,
 };
 
 static void output_handle_geometry(void *data, struct wl_output *wl_output,
@@ -874,11 +1621,11 @@ static void output_handle_done(void *data, struct wl_output *wl_output)
     o->geometry.x1 += o->geometry.x0;
     o->geometry.y1 += o->geometry.y0;
 
-    MP_VERBOSE(o->wl, "Registered output %s %s (0x%x):\n"
+    MP_VERBOSE(o->wl, "Registered output %s %s (%s) (0x%x):\n"
                "\tx: %dpx, y: %dpx\n"
                "\tw: %dpx (%dmm), h: %dpx (%dmm)\n"
                "\tscale: %f\n"
-               "\tHz: %f\n", o->make, o->model, o->id, o->geometry.x0,
+               "\tHz: %f\n", o->make, o->model, o->name, o->id, o->geometry.x0,
                o->geometry.y0, mp_rect_w(o->geometry), o->phys_width,
                mp_rect_h(o->geometry), o->phys_height,
                o->scale / WAYLAND_SCALE_FACTOR, o->refresh_rate);
@@ -889,7 +1636,7 @@ static void output_handle_done(void *data, struct wl_output *wl_output)
     if (wl->current_output && wl->current_output->output == wl_output) {
         set_surface_scaling(wl);
         set_geometry(wl, false);
-        prepare_resize(wl);
+        wl->pending_vo_events |= VO_EVENT_RESIZE;
     }
 
     wl->pending_vo_events |= VO_EVENT_WIN_STATE;
@@ -993,7 +1740,9 @@ static void surface_handle_preferred_buffer_scale(void *data,
 {
     struct vo_wayland_state *wl = data;
 
-    if (wl->fractional_scale_manager || wl->scaling == scale * WAYLAND_SCALE_FACTOR)
+    if (wl->fractional_scale_manager ||
+        (wl->scaling == scale * WAYLAND_SCALE_FACTOR &&
+         wl->current_output && wl->current_output->has_surface))
         return;
 
     wl->pending_scaling = scale * WAYLAND_SCALE_FACTOR;
@@ -1190,7 +1939,7 @@ resize:
                mp_rect_w(old_geometry), mp_rect_h(old_geometry),
                mp_rect_w(wl->geometry), mp_rect_h(wl->geometry));
 
-    prepare_resize(wl);
+    wl->pending_vo_events |= VO_EVENT_RESIZE;
     wl->toplevel_configured = true;
 }
 
@@ -1225,12 +1974,12 @@ static void preferred_scale(void *data,
                             uint32_t scale)
 {
     struct vo_wayland_state *wl = data;
-    if (wl->scaling == scale)
+    if (wl->scaling == scale && wl->current_output && wl->current_output->has_surface)
         return;
 
     wl->pending_scaling = scale;
     wl->scale_configured = true;
-    MP_VERBOSE(wl, "Obtained preferred scale, %f, from the compositor.\n",
+    MP_VERBOSE(wl, "Obtained preferred fractional scale, %f, from the compositor.\n",
                wl->pending_scaling / WAYLAND_SCALE_FACTOR);
     wl->need_rescale = true;
 
@@ -1248,138 +1997,356 @@ static const struct wp_fractional_scale_v1_listener fractional_scale_listener = 
     preferred_scale,
 };
 
-static void supported_intent(void *data, struct xx_color_manager_v4 *color_manager,
+#if HAVE_WAYLAND_PROTOCOLS_1_41
+static void supported_intent(void *data, struct wp_color_manager_v1 *color_manager,
                              uint32_t render_intent)
 {
 }
 
-static void supported_feature(void *data, struct xx_color_manager_v4 *color_manager,
+static void supported_feature(void *data, struct wp_color_manager_v1 *color_manager,
                               uint32_t feature)
 {
     struct vo_wayland_state *wl = data;
 
     switch (feature) {
-    case XX_COLOR_MANAGER_V4_FEATURE_ICC_V2_V4:
+    case WP_COLOR_MANAGER_V1_FEATURE_ICC_V2_V4:
         MP_VERBOSE(wl, "Compositor supports ICC creator requests.\n");
-        wl->supports_icc = true; // TODO: actually implement
+        wl->supports_icc = true;
         break;
-    case XX_COLOR_MANAGER_V4_FEATURE_PARAMETRIC:
+    case WP_COLOR_MANAGER_V1_FEATURE_PARAMETRIC:
         MP_VERBOSE(wl, "Compositor supports parametric image description creator.\n");
         wl->supports_parametric = true;
         break;
-    case XX_COLOR_MANAGER_V4_FEATURE_SET_PRIMARIES:
+    case WP_COLOR_MANAGER_V1_FEATURE_SET_PRIMARIES:
         MP_VERBOSE(wl, "Compositor supports setting primaries.\n");
         wl->supports_primaries = true;
         break;
-    case XX_COLOR_MANAGER_V4_FEATURE_SET_TF_POWER:
+    case WP_COLOR_MANAGER_V1_FEATURE_SET_TF_POWER:
         MP_VERBOSE(wl, "Compositor supports setting transfer functions.\n");
         wl->supports_tf_power = true;
         break;
-    case XX_COLOR_MANAGER_V4_FEATURE_SET_LUMINANCES:
+    case WP_COLOR_MANAGER_V1_FEATURE_SET_LUMINANCES:
         MP_VERBOSE(wl, "Compositor supports setting luminances.\n");
         wl->supports_luminances = true;
         break;
-    case XX_COLOR_MANAGER_V4_FEATURE_SET_MASTERING_DISPLAY_PRIMARIES:
+    case WP_COLOR_MANAGER_V1_FEATURE_SET_MASTERING_DISPLAY_PRIMARIES:
         MP_VERBOSE(wl, "Compositor supports setting mastering display primaries.\n");
         wl->supports_display_primaries = true;
         break;
     }
 }
 
-static void supported_tf_named(void *data, struct xx_color_manager_v4 *color_manager,
+static enum pl_color_transfer map_tf(uint32_t tf)
+{
+    switch (tf) {
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_BT1886: return PL_COLOR_TRC_BT_1886;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB: return PL_COLOR_TRC_SRGB;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR: return PL_COLOR_TRC_LINEAR;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22: return PL_COLOR_TRC_GAMMA22;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA28: return PL_COLOR_TRC_GAMMA28;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST428: return PL_COLOR_TRC_ST428;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ: return PL_COLOR_TRC_PQ;
+        case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG: return PL_COLOR_TRC_HLG;
+        default: return PL_COLOR_TRC_UNKNOWN;
+    }
+}
+
+static void supported_tf_named(void *data, struct wp_color_manager_v1 *color_manager,
                                uint32_t tf)
 {
     struct vo_wayland_state *wl = data;
+    enum pl_color_transfer pl_tf = map_tf(tf);
 
-    switch (tf) {
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_BT709:
-        wl->transfer_map[PL_COLOR_TRC_BT_1886] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_BT709;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_SRGB:
-        wl->transfer_map[PL_COLOR_TRC_SRGB] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_SRGB;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_LINEAR:
-        wl->transfer_map[PL_COLOR_TRC_LINEAR] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_LINEAR;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA22:
-        wl->transfer_map[PL_COLOR_TRC_GAMMA22] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA22;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA28:
-        wl->transfer_map[PL_COLOR_TRC_GAMMA28] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA28;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST428:
-        wl->transfer_map[PL_COLOR_TRC_ST428] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST428;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST2084_PQ:
-        wl->transfer_map[PL_COLOR_TRC_PQ] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST2084_PQ;
-        break;
-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_HLG:
-        wl->transfer_map[PL_COLOR_TRC_HLG] = XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_HLG;
-        break;
+    if (pl_tf == PL_COLOR_TRC_UNKNOWN)
+        return;
+
+    wl->transfer_map[pl_tf] = tf;
+}
+
+static enum pl_color_primaries map_primaries(uint32_t primaries)
+{
+    switch (primaries) {
+        case WP_COLOR_MANAGER_V1_PRIMARIES_PAL: return PL_COLOR_PRIM_BT_601_525;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_NTSC: return PL_COLOR_PRIM_BT_601_625;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_SRGB: return PL_COLOR_PRIM_BT_709;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_PAL_M: return PL_COLOR_PRIM_BT_470M;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_BT2020: return PL_COLOR_PRIM_BT_2020;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_ADOBE_RGB: return PL_COLOR_PRIM_ADOBE;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_DCI_P3: return PL_COLOR_PRIM_DCI_P3;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_DISPLAY_P3: return PL_COLOR_PRIM_DISPLAY_P3;
+        case WP_COLOR_MANAGER_V1_PRIMARIES_GENERIC_FILM: return PL_COLOR_PRIM_FILM_C;
+        default: return PL_COLOR_PRIM_UNKNOWN;
     }
 }
 
-static void supported_primaries_named(void *data, struct xx_color_manager_v4 *color_manager,
+static void supported_primaries_named(void *data, struct wp_color_manager_v1 *color_manager,
                                       uint32_t primaries)
 {
     struct vo_wayland_state *wl = data;
+    enum pl_color_primaries pl_primaries = map_primaries(primaries);
 
-    switch (primaries) {
-    case XX_COLOR_MANAGER_V4_PRIMARIES_PAL:
-        wl->primaries_map[PL_COLOR_PRIM_BT_601_525] = XX_COLOR_MANAGER_V4_PRIMARIES_PAL;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_NTSC:
-        wl->primaries_map[PL_COLOR_PRIM_BT_601_625] = XX_COLOR_MANAGER_V4_PRIMARIES_NTSC;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_SRGB:
-        wl->primaries_map[PL_COLOR_PRIM_BT_709] = XX_COLOR_MANAGER_V4_PRIMARIES_SRGB;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_PAL_M:
-        wl->primaries_map[PL_COLOR_PRIM_BT_470M] = XX_COLOR_MANAGER_V4_PRIMARIES_PAL_M;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_BT2020:
-        wl->primaries_map[PL_COLOR_PRIM_BT_2020] = XX_COLOR_MANAGER_V4_PRIMARIES_BT2020;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_ADOBE_RGB:
-        wl->primaries_map[PL_COLOR_PRIM_ADOBE] = XX_COLOR_MANAGER_V4_PRIMARIES_ADOBE_RGB;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_DCI_P3:
-        wl->primaries_map[PL_COLOR_PRIM_DCI_P3] = XX_COLOR_MANAGER_V4_PRIMARIES_DCI_P3;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_DISPLAY_P3:
-        wl->primaries_map[PL_COLOR_PRIM_DISPLAY_P3] = XX_COLOR_MANAGER_V4_PRIMARIES_DISPLAY_P3;
-        break;
-    case XX_COLOR_MANAGER_V4_PRIMARIES_GENERIC_FILM:
-        wl->primaries_map[PL_COLOR_PRIM_FILM_C] = XX_COLOR_MANAGER_V4_PRIMARIES_GENERIC_FILM;
-        break;
-    }
+    if (pl_primaries == PL_COLOR_PRIM_UNKNOWN)
+        return;
+
+    wl->primaries_map[pl_primaries] = primaries;
 }
 
-static const struct xx_color_manager_v4_listener color_manager_listener = {
+static void color_manager_done(void *data, struct wp_color_manager_v1 *color_manager)
+{
+}
+
+static const struct wp_color_manager_v1_listener color_manager_listener = {
     supported_intent,
     supported_feature,
     supported_tf_named,
     supported_primaries_named,
+    color_manager_done,
 };
 
-static void image_description_failed(void *data, struct xx_image_description_v4 *image_description,
+static void image_description_failed(void *data, struct wp_image_description_v1 *image_description,
                                      uint32_t cause, const char *msg)
 {
     struct vo_wayland_state *wl = data;
     MP_VERBOSE(wl, "Image description failed: %d, %s\n", cause, msg);
+    wp_image_description_v1_destroy(image_description);
 }
 
-static void image_description_ready(void *data, struct xx_image_description_v4 *image_description,
+static void image_description_ready(void *data, struct wp_image_description_v1 *image_description,
                                     uint32_t identity)
 {
     struct vo_wayland_state *wl = data;
-    xx_color_management_surface_v4_set_image_description(wl->color_surface, wl->image_description, 0);
+    wp_color_management_surface_v1_set_image_description(wl->color_surface, image_description, 0);
+    MP_VERBOSE(wl, "Image description set on color surface.\n");
+    wp_image_description_v1_destroy(image_description);
 }
 
-static const struct xx_image_description_v4_listener image_description_listener = {
+static const struct wp_image_description_v1_listener image_description_listener = {
     image_description_failed,
     image_description_ready,
 };
+
+static void info_done(void *data, struct wp_image_description_info_v1 *image_description_info)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    struct vo_wayland_state *wl = wd->wl;
+    wp_image_description_info_v1_destroy(image_description_info);
+    if (wd->is_parametric) {
+        wl->preferred_csp = wd->csp;
+    } else {
+        if (wd->icc_file) {
+            if (wl->icc_size) {
+                munmap(wl->icc_file, wl->icc_size);
+            }
+            wl->icc_file = wd->icc_file;
+            wl->icc_size = wd->icc_size;
+            wl->pending_vo_events |= VO_EVENT_ICC_PROFILE_CHANGED;
+        } else {
+            MP_VERBOSE(wl, "No ICC profile retrieved from the compositor.\n");
+        }
+    }
+    talloc_free(wd);
+}
+
+static void info_icc_file(void *data, struct wp_image_description_info_v1 *image_description_info,
+                          int32_t icc, uint32_t icc_size)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (wd->is_parametric)
+        return;
+
+    void *icc_file = mmap(NULL, icc_size, PROT_READ, MAP_PRIVATE, icc, 0);
+    close(icc);
+
+    if (icc_file != MAP_FAILED) {
+        wd->icc_file = icc_file;
+        wd->icc_size = icc_size;
+    }
+}
+
+static void info_primaries(void *data, struct wp_image_description_info_v1 *image_description_info,
+                           int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y,
+                           int32_t w_x, int32_t w_y)
+{
+}
+
+static void info_primaries_named(void *data, struct wp_image_description_info_v1 *image_description_info,
+                                 uint32_t primaries)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (!wd->is_parametric)
+        return;
+    wd->csp.primaries = map_primaries(primaries);
+}
+
+static void info_tf_power(void *data, struct wp_image_description_info_v1 *image_description_info,
+                          uint32_t eexp)
+{
+}
+
+static void info_tf_named(void *data, struct wp_image_description_info_v1 *image_description_info,
+                          uint32_t tf)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (!wd->is_parametric)
+        return;
+    wd->csp.transfer = map_tf(tf);
+}
+
+static void info_luminances(void *data, struct wp_image_description_info_v1 *image_description_info,
+                            uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum)
+{
+}
+
+static void info_target_primaries(void *data, struct wp_image_description_info_v1 *image_description_info,
+                                  int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y,
+                                  int32_t w_x, int32_t w_y)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (!wd->is_parametric)
+        return;
+    wd->csp.hdr.prim.red.x = (float)r_x / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.red.y = (float)r_y / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.green.x = (float)g_x / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.green.y = (float)g_y / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.blue.x = (float)b_x / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.blue.y = (float)b_y / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.white.x = (float)w_x / WAYLAND_COLOR_FACTOR;
+    wd->csp.hdr.prim.white.y = (float)w_y / WAYLAND_COLOR_FACTOR;
+}
+
+static void info_target_luminance(void *data, struct wp_image_description_info_v1 *image_description_info,
+                                  uint32_t min_lum, uint32_t max_lum)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (!wd->is_parametric)
+        return;
+    wd->csp.hdr.min_luma = (float)min_lum / WAYLAND_MIN_LUM_FACTOR;
+    wd->csp.hdr.max_luma = (float)max_lum;
+}
+
+static void info_target_max_cll(void *data, struct wp_image_description_info_v1 *image_description_info,
+                                uint32_t max_cll)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (!wd->is_parametric)
+        return;
+    wd->csp.hdr.max_cll = (float)max_cll;
+}
+
+static void info_target_max_fall(void *data, struct wp_image_description_info_v1 *image_description_info,
+                                 uint32_t max_fall)
+{
+    struct vo_wayland_preferred_description_info *wd = data;
+    if (!wd->is_parametric)
+        return;
+    wd->csp.hdr.max_fall = (float)max_fall;
+}
+
+static const struct wp_image_description_info_v1_listener image_description_info_listener = {
+    info_done,
+    info_icc_file,
+    info_primaries,
+    info_primaries_named,
+    info_tf_power,
+    info_tf_named,
+    info_luminances,
+    info_target_primaries,
+    info_target_luminance,
+    info_target_max_cll,
+    info_target_max_fall,
+};
+
+static void preferred_changed(void *data, struct wp_color_management_surface_feedback_v1 *color_surface_feedback,
+                              uint32_t identity)
+{
+    struct vo_wayland_state *wl = data;
+    if (wl->supports_icc)
+        get_compositor_preferred_description(wl, false);
+    if (wl->supports_parametric)
+        get_compositor_preferred_description(wl, true);
+}
+
+static const struct wp_color_management_surface_feedback_v1_listener surface_feedback_listener = {
+    preferred_changed,
+};
+#endif
+
+#if HAVE_WAYLAND_PROTOCOLS_1_44
+static void supported_alpha_mode(void *data, struct wp_color_representation_manager_v1 *color_representation_manager,
+                                 uint32_t alpha_mode)
+{
+    struct vo_wayland_state *wl = data;
+    switch (alpha_mode) {
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_ALPHA_MODE_PREMULTIPLIED_ELECTRICAL:
+#if PL_API_VER >= 344
+        wl->alpha_map[PL_ALPHA_NONE] = alpha_mode;
+#endif
+        break;
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_ALPHA_MODE_STRAIGHT:
+        wl->alpha_map[PL_ALPHA_INDEPENDENT] = alpha_mode;
+        break;
+    }
+}
+
+static void supported_coefficients_and_ranges(void *data, struct wp_color_representation_manager_v1 *color_representation_manager,
+                                              uint32_t coefficients, uint32_t range)
+{
+    struct vo_wayland_state *wl = data;
+    int offset = range == WP_COLOR_REPRESENTATION_SURFACE_V1_RANGE_FULL ? 0 : PL_COLOR_SYSTEM_COUNT;
+    switch (coefficients) {
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT709:
+        wl->coefficients_map[PL_COLOR_SYSTEM_BT_709] = WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT709;
+        wl->range_map[PL_COLOR_SYSTEM_BT_709 + offset] = range;
+        break;
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT601:
+        wl->coefficients_map[PL_COLOR_SYSTEM_BT_601] = WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT601;
+        wl->range_map[PL_COLOR_SYSTEM_BT_601 + offset] = range;
+        break;
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_SMPTE240:
+        wl->coefficients_map[PL_COLOR_SYSTEM_SMPTE_240M] = WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_SMPTE240;
+        wl->range_map[PL_COLOR_SYSTEM_SMPTE_240M + offset] = range;
+        break;
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT2020:
+        wl->coefficients_map[PL_COLOR_SYSTEM_BT_2020_NC] = WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT2020;
+        wl->range_map[PL_COLOR_SYSTEM_BT_2020_NC + offset] = range;
+        break;
+    case WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT2020_CL:
+        wl->coefficients_map[PL_COLOR_SYSTEM_BT_2020_C] = WP_COLOR_REPRESENTATION_SURFACE_V1_COEFFICIENTS_BT2020_CL;
+        wl->range_map[PL_COLOR_SYSTEM_BT_2020_C + offset] = range;
+        break;
+    }
+}
+
+static int map_supported_chroma_location(enum pl_chroma_location chroma_location)
+{
+    switch (chroma_location) {
+    case PL_CHROMA_LEFT:
+        return WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_0;
+    case PL_CHROMA_CENTER:
+        return WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_1;
+    case PL_CHROMA_TOP_LEFT:
+        return WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_2;
+    case PL_CHROMA_TOP_CENTER:
+        return WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_3;
+    case PL_CHROMA_BOTTOM_LEFT:
+        return WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_4;
+    case PL_CHROMA_BOTTOM_CENTER:
+        return WP_COLOR_REPRESENTATION_SURFACE_V1_CHROMA_LOCATION_TYPE_5;
+    default:
+        return 0;
+    }
+}
+
+static void color_representation_done(void *data, struct wp_color_representation_manager_v1 *color_representation_manager)
+{
+}
+
+static const struct wp_color_representation_manager_v1_listener color_representation_listener = {
+    supported_alpha_mode,
+    supported_coefficients_and_ranges,
+    color_representation_done,
+};
+#endif
 
 static const char *zxdg_decoration_mode_to_str(const uint32_t mode)
 {
@@ -1423,8 +2390,8 @@ static const struct zxdg_toplevel_decoration_v1_listener decoration_listener = {
     configure_decorations,
 };
 
-static void pres_set_clockid(void *data, struct wp_presentation *pres,
-                             uint32_t clockid)
+static void presentation_set_clockid(void *data, struct wp_presentation *presentation,
+                                     uint32_t clockid)
 {
     struct vo_wayland_state *wl = data;
 
@@ -1432,8 +2399,8 @@ static void pres_set_clockid(void *data, struct wp_presentation *pres,
         wl->present_clock = true;
 }
 
-static const struct wp_presentation_listener pres_listener = {
-    pres_set_clockid,
+static const struct wp_presentation_listener presentation_listener = {
+    presentation_set_clockid,
 };
 
 static void feedback_sync_output(void *data, struct wp_presentation_feedback *fback,
@@ -1449,6 +2416,13 @@ static void feedback_presented(void *data, struct wp_presentation_feedback *fbac
 {
     struct vo_wayland_feedback_pool *fback_pool = data;
     struct vo_wayland_state *wl = fback_pool->wl;
+
+    bool current_zero_copy = flags & WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY;
+    if (wl->last_zero_copy == -1 || wl->last_zero_copy != current_zero_copy) {
+        MP_DBG(wl, "Presentation was done with %s.\n",
+                 current_zero_copy ? "direct scanout" : "a copy");
+        wl->last_zero_copy = current_zero_copy;
+    }
 
     if (fback)
         remove_feedback(fback_pool, fback);
@@ -1473,6 +2447,8 @@ static void feedback_presented(void *data, struct wp_presentation_feedback *fbac
 static void feedback_discarded(void *data, struct wp_presentation_feedback *fback)
 {
     struct vo_wayland_feedback_pool *fback_pool = data;
+    struct vo_wayland_state *wl = fback_pool->wl;
+    wl->last_zero_copy = -1;
     if (fback)
         remove_feedback(fback_pool, fback);
 }
@@ -1573,7 +2549,6 @@ static void tranche_target_device(void *data,
     static_assert(sizeof(tranche->device_id) == sizeof(dev_t), "");
 
     wl->current_tranche = tranche;
-    get_planar_drm_formats(wl);
     wl_list_insert(&wl->tranche_list, &tranche->link);
 }
 
@@ -1675,7 +2650,7 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
 
     if (!strcmp(interface, wl_data_device_manager_interface.name) && (ver >= 3) && found++) {
         ver = 3;
-        wl->dnd_devman = wl_registry_bind(reg, id, &wl_data_device_manager_interface, ver);
+        wl->devman = wl_registry_bind(reg, id, &wl_data_device_manager_interface, ver);
     }
 
     if (!strcmp(interface, wl_output_interface.name) && (ver >= 2) && found++) {
@@ -1700,15 +2675,39 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
         struct vo_wayland_seat *seat = talloc_zero(wl, struct vo_wayland_seat);
         seat->wl   = wl;
         seat->id   = id;
+        seat->pending_offer = talloc_zero(seat, struct vo_wayland_data_offer);
+        seat->dnd_offer = talloc_zero(seat, struct vo_wayland_data_offer);
+        seat->selection_offer = talloc_zero(seat, struct vo_wayland_data_offer);
+        seat->pending_offer->fd = seat->dnd_offer->fd = seat->selection_offer->fd = -1;
+        wl_list_init(&seat->tablet_list);
+        wl_list_init(&seat->tablet_tool_list);
+        wl_list_init(&seat->tablet_pad_list);
         seat->seat = wl_registry_bind(reg, id, &wl_seat_interface, ver);
         wl_seat_add_listener(seat->seat, &seat_listener, seat);
         wl_list_insert(&wl->seat_list, &seat->link);
+
+        if (wl->devman)
+            seat_create_data_device(seat);
+
+        if (wl->text_input_manager)
+            seat_create_text_input(seat);
+
+        if (wl->wp_tablet_manager)
+            seat_create_tablet_seat(wl, seat);
     }
 
     if (!strcmp(interface, wl_shm_interface.name) && found++) {
         ver = 1;
         wl->shm = wl_registry_bind(reg, id, &wl_shm_interface, ver);
     }
+
+#if HAVE_WAYLAND_PROTOCOLS_1_44
+    if (!strcmp(interface, wp_color_representation_manager_v1_interface.name) && found++) {
+        ver = 1;
+        wl->color_representation_manager = wl_registry_bind(reg, id, &wp_color_representation_manager_v1_interface, ver);
+        wp_color_representation_manager_v1_add_listener(wl->color_representation_manager, &color_representation_listener, wl);
+    }
+#endif
 
     if (!strcmp(interface, wp_content_type_manager_v1_interface.name) && found++) {
         ver = 1;
@@ -1720,6 +2719,13 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
         wl->single_pixel_manager = wl_registry_bind(reg, id, &wp_single_pixel_buffer_manager_v1_interface, ver);
     }
 
+#if HAVE_WAYLAND_PROTOCOLS_1_38
+    if (!strcmp(interface, wp_fifo_manager_v1_interface.name) && found++) {
+        ver = 1;
+        wl->has_fifo = true;
+    }
+#endif
+
     if (!strcmp(interface, wp_fractional_scale_manager_v1_interface.name) && found++) {
         ver = 1;
         wl->fractional_scale_manager = wl_registry_bind(reg, id, &wp_fractional_scale_manager_v1_interface, ver);
@@ -1727,15 +2733,16 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
 
 #if HAVE_WAYLAND_PROTOCOLS_1_32
     if (!strcmp(interface, wp_cursor_shape_manager_v1_interface.name) && found++) {
-        ver = 1;
+        ver = MPMIN(ver, 2);
         wl->cursor_shape_manager = wl_registry_bind(reg, id, &wp_cursor_shape_manager_v1_interface, ver);
     }
 #endif
 
     if (!strcmp(interface, wp_presentation_interface.name) && found++) {
         ver = MPMIN(ver, 2);
+        wl->present_v2 = ver == 2;
         wl->presentation = wl_registry_bind(reg, id, &wp_presentation_interface, ver);
-        wp_presentation_add_listener(wl->presentation, &pres_listener, wl);
+        wp_presentation_add_listener(wl->presentation, &presentation_listener, wl);
     }
 
     if (!strcmp(interface, xdg_wm_base_interface.name) && found++) {
@@ -1744,11 +2751,17 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
         xdg_wm_base_add_listener(wl->wm_base, &xdg_wm_base_listener, wl);
     }
 
-    if (!strcmp(interface, xx_color_manager_v4_interface.name) && found++) {
+#if HAVE_WAYLAND_PROTOCOLS_1_41
+    if (!strcmp(interface, wp_color_manager_v1_interface.name) && found++) {
         ver = 1;
-        initialize_color_maps(wl);
-        wl->color_manager = wl_registry_bind(reg, id, &xx_color_manager_v4_interface, ver);
-        xx_color_manager_v4_add_listener(wl->color_manager, &color_manager_listener, wl);
+        wl->color_manager = wl_registry_bind(reg, id, &wp_color_manager_v1_interface, ver);
+        wp_color_manager_v1_add_listener(wl->color_manager, &color_manager_listener, wl);
+    }
+#endif
+
+    if (!strcmp(interface, xdg_activation_v1_interface.name) && found++) {
+        ver = 1;
+        wl->xdg_activation = wl_registry_bind(reg, id, &xdg_activation_v1_interface, ver);
     }
 
     if (!strcmp(interface, zxdg_decoration_manager_v1_interface.name) && found++) {
@@ -1759,6 +2772,16 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
     if (!strcmp(interface, zwp_idle_inhibit_manager_v1_interface.name) && found++) {
         ver = 1;
         wl->idle_inhibit_manager = wl_registry_bind(reg, id, &zwp_idle_inhibit_manager_v1_interface, ver);
+    }
+
+    if (!strcmp(interface, zwp_text_input_manager_v3_interface.name) && found++) {
+        ver = 1;
+        wl->text_input_manager = wl_registry_bind(reg, id, &zwp_text_input_manager_v3_interface, ver);
+    }
+
+    if (!strcmp(interface, zwp_tablet_manager_v2_interface.name) && found++) {
+        ver = 1;
+        wl->wp_tablet_manager = wl_registry_bind(reg, id, &zwp_tablet_manager_v2_interface, ver);
     }
 
     if (found > 1)
@@ -1800,7 +2823,7 @@ static void apply_keepaspect(struct vo_wayland_state *wl, int *width, int *heigh
     int phys_height = handle_round(wl->scaling, *height);
 
     // Ensure that the size actually changes before we start trying to actually
-    // calculate anything so the wrong constraint for the rezie isn't choosen.
+    // calculate anything so the wrong constraint for the rezie isn't chosen.
     if (wl->resizing && !wl->resizing_constraint &&
         phys_width == mp_rect_w(wl->geometry) && phys_height == mp_rect_h(wl->geometry))
         return;
@@ -1831,102 +2854,100 @@ static void apply_keepaspect(struct vo_wayland_state *wl, int *width, int *heigh
     }
 }
 
-static void free_dnd_data(struct vo_wayland_state *wl)
+static void destroy_offer(struct vo_wayland_data_offer *o)
 {
-    // caller should close wl->dnd_fd if appropriate
-
-    wl->dnd_action = -1;
-    TA_FREEP(&wl->dnd_mime_type);
-    wl->dnd_mime_score = 0;
+    TA_FREEP(&o->mime_type);
+    if (o->fd != -1)
+        close(o->fd);
+    if (o->offer)
+        wl_data_offer_destroy(o->offer);
+    *o = (struct vo_wayland_data_offer){.fd = -1, .action = -1};
 }
 
-static void check_dnd_fd(struct vo_wayland_state *wl)
+static void check_fd(struct vo_wayland_state *wl, struct vo_wayland_data_offer *o, bool is_dnd)
 {
-    if (wl->dnd_fd == -1)
+    if (o->fd == -1)
         return;
 
-    struct pollfd fdp = { wl->dnd_fd, POLLIN | POLLHUP, 0 };
+    struct pollfd fdp = { .fd = o->fd, .events = POLLIN };
     if (poll(&fdp, 1, 0) <= 0)
         return;
 
     if (fdp.revents & POLLIN) {
         ssize_t data_read = 0;
         const size_t chunk_size = 256;
-        bstr file_list = {
-            .start = talloc_zero_size(NULL, chunk_size),
+        bstr content = {
+            .start = talloc_zero_size(wl, chunk_size),
         };
 
         while (1) {
-            data_read = read(wl->dnd_fd, file_list.start + file_list.len, chunk_size);
+            data_read = read(o->fd, content.start + content.len, chunk_size);
             if (data_read == -1 && errno == EINTR)
                 continue;
             else if (data_read <= 0)
                 break;
-            file_list.len += data_read;
-            file_list.start = talloc_realloc_size(NULL, file_list.start, file_list.len + chunk_size);
-            memset(file_list.start + file_list.len, 0, chunk_size);
+            content.len += data_read;
+            content.start = talloc_realloc_size(wl, content.start, content.len + chunk_size);
+            memset(content.start + content.len, 0, chunk_size);
         }
 
         if (data_read == -1) {
-            MP_VERBOSE(wl, "DND aborted (read error)\n");
+            MP_VERBOSE(wl, "data offer aborted (read error: %s)\n", mp_strerror(errno));
         } else {
-            MP_VERBOSE(wl, "Read %zu bytes from the DND fd\n", file_list.len);
+            MP_VERBOSE(wl, "Read %zu bytes from the data offer fd\n", content.len);
 
-            if (wl->dnd_offer)
-                wl_data_offer_finish(wl->dnd_offer);
+            if (is_dnd) {
+                if (o->offer)
+                    wl_data_offer_finish(o->offer);
 
-            assert(wl->dnd_action >= 0);
-            mp_event_drop_mime_data(wl->vo->input_ctx, wl->dnd_mime_type,
-                                    file_list, wl->dnd_action);
+                if (o->action >= 0) {
+                    mp_event_drop_mime_data(wl->vo->input_ctx, o->mime_type,
+                                            content, o->action);
+                } else {
+                    MP_WARN(wl, "Data offer did not have a valid action!\n");
+                }
+            } else {
+                // Update clipboard text content
+                talloc_free(wl->selection_text.start);
+                wl->selection_text = content;
+                content = (bstr){0};
+                mp_cmd_t *cmd = mp_input_parse_cmd(
+                    wl->vo->input_ctx, bstr0("notify-property clipboard"), "<internal>"
+                );
+                mp_input_queue_cmd(wl->vo->input_ctx, cmd);
+            }
         }
 
-        talloc_free(file_list.start);
-        free_dnd_data(wl);
+        talloc_free(content.start);
+        destroy_offer(o);
     }
 
     if (fdp.revents & (POLLIN | POLLERR | POLLHUP)) {
-        if (wl->dnd_action >= 0)
-            MP_VERBOSE(wl, "DND aborted (hang up or error)\n");
-        free_dnd_data(wl);
-        close(wl->dnd_fd);
-        wl->dnd_fd = -1;
+        if (o->action >= 0)
+            MP_VERBOSE(wl, "data offer aborted (hang up or error)\n");
+        destroy_offer(o);
     }
 }
 
 static int check_for_resize(struct vo_wayland_state *wl, int edge_pixels,
-                            enum xdg_toplevel_resize_edge *edge)
+                            enum xdg_toplevel_resize_edge *edges)
 {
     if (wl->opts->fullscreen || wl->opts->window_maximized)
         return 0;
 
     int pos[2] = { wl->mouse_x, wl->mouse_y };
-    int left_edge   = pos[0] < edge_pixels;
-    int top_edge    = pos[1] < edge_pixels;
-    int right_edge  = pos[0] > (mp_rect_w(wl->geometry) - edge_pixels);
-    int bottom_edge = pos[1] > (mp_rect_h(wl->geometry) - edge_pixels);
+    *edges = 0;
 
-    if (left_edge) {
-        *edge = XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
-        if (top_edge)
-            *edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT;
-        else if (bottom_edge)
-            *edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT;
-    } else if (right_edge) {
-        *edge = XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
-        if (top_edge)
-            *edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT;
-        else if (bottom_edge)
-            *edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT;
-    } else if (top_edge) {
-        *edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP;
-    } else if (bottom_edge) {
-        *edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM;
-    } else {
-        *edge = 0;
-        return 0;
-    }
+    if (pos[0] < edge_pixels)
+        *edges |= XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
+    if (pos[0] > (mp_rect_w(wl->geometry) - edge_pixels))
+        *edges |= XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
+    if (pos[1] < edge_pixels)
+        *edges |= XDG_TOPLEVEL_RESIZE_EDGE_TOP;
+    if (pos[1] > (mp_rect_h(wl->geometry) - edge_pixels))
+        *edges |= XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM;
 
-    return 1;
+    return *edges;
 }
 
 static bool create_input(struct vo_wayland_state *wl)
@@ -1939,6 +2960,16 @@ static bool create_input(struct vo_wayland_state *wl)
     }
 
     return 0;
+}
+
+static void xdg_activate(struct vo_wayland_state *wl)
+{
+    const char *token = getenv("XDG_ACTIVATION_TOKEN");
+    if (token) {
+        MP_VERBOSE(wl, "Activating window with token: '%s'\n", token);
+        xdg_activation_v1_activate(wl->xdg_activation, token, wl->surface);
+        unsetenv("XDG_ACTIVATION_TOKEN");
+    }
 }
 
 static int create_viewports(struct vo_wayland_state *wl)
@@ -1985,19 +3016,6 @@ static void add_feedback(struct vo_wayland_feedback_pool *fback_pool,
     }
 }
 
-static bool devices_are_equal(dev_t a, dev_t b)
-{
-    bool ret = false;
-#if HAVE_DRM
-    drmDevice *deviceA, *deviceB;
-    if (!drmGetDeviceFromDevId(a, 0, &deviceA) && !drmGetDeviceFromDevId(b, 0, &deviceB))
-        ret = drmDevicesEqual(deviceA, deviceB);
-    drmFreeDevice(&deviceA);
-    drmFreeDevice(&deviceB);
-#endif
-    return ret;
-}
-
 static void do_minimize(struct vo_wayland_state *wl)
 {
     if (wl->opts->window_minimized)
@@ -2018,117 +3036,6 @@ static char **get_displays_spanned(struct vo_wayland_state *wl)
     }
     MP_TARRAY_APPEND(NULL, names, displays_spanned, NULL);
     return names;
-}
-
-static void get_planar_drm_formats(struct vo_wayland_state *wl)
-{
-#if HAVE_DRM
-    struct vo_wayland_tranche *tranche;
-    wl_list_for_each(tranche, &wl->tranche_list, link) {
-        // If there is a device equality, just copy the pointer over.
-        if (devices_are_equal(tranche->device_id, wl->current_tranche->device_id)) {
-            wl->current_tranche->planar_formats = tranche->planar_formats;
-            wl->current_tranche->num_planar_formats = tranche->num_planar_formats;
-            return;
-        }
-    }
-
-    tranche = wl->current_tranche;
-    drmDevice *device = NULL;
-    drmModePlaneRes *res = NULL;
-    drmModePlane *plane = NULL;
-
-    if (drmGetDeviceFromDevId(tranche->device_id, 0, &device) != 0) {
-        MP_VERBOSE(wl, "Unable to get drm device from device id: %s\n", mp_strerror(errno));
-        goto done;
-    }
-
-    // Pick the first path we get and hope for the best.
-    char *path = NULL;
-    for (int i = 0; i < device->available_nodes; ++i) {
-        if (device->nodes[0]) {
-            path = device->nodes[0];
-            break;
-        }
-    }
-
-    if (!path || !path[0]) {
-        MP_VERBOSE(wl, "Unable to find a valid drm device node.\n");
-        goto done;
-    }
-
-    int fd = open(path, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        MP_VERBOSE(wl, "Unable to open DRM node path '%s': %s\n", path, mp_strerror(errno));
-        goto done;
-    }
-
-    // Need to set this in order to access plane information.
-    if (drmSetClientCap(fd, DRM_CLIENT_CAP_ATOMIC, 1)) {
-        MP_VERBOSE(wl, "Unable to set DRM atomic cap: %s\n", mp_strerror(errno));
-        goto done;
-    }
-
-    res = drmModeGetPlaneResources(fd);
-    if (!res) {
-        MP_VERBOSE(wl, "Unable to get DRM plane resources: %s\n", mp_strerror(errno));
-        goto done;
-    }
-
-    if (!res->count_planes) {
-        MP_VERBOSE(wl, "No DRM planes were found.\n");
-        goto done;
-    }
-
-    // Only check the formats on the first primary plane we find as a crude guess.
-    int index = -1;
-    for (int i = 0; i < res->count_planes; ++i) {
-        drmModeObjectProperties *props = NULL;
-        props = drmModeObjectGetProperties(fd, res->planes[i], DRM_MODE_OBJECT_PLANE);
-        if (!props) {
-            MP_VERBOSE(wl, "Unable to get DRM plane properties: %s\n", mp_strerror(errno));
-            continue;
-        }
-        for (int j = 0; j < props->count_props; ++j) {
-            drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[j]);
-            if (!prop) {
-                MP_VERBOSE(wl, "Unable to get DRM plane property: %s\n", mp_strerror(errno));
-                continue;
-            }
-            if (strcmp(prop->name, "type") == 0) {
-                for (int k = 0; k < prop->count_values; ++k) {
-                    if (prop->values[k] == DRM_PLANE_TYPE_PRIMARY)
-                        index = i;
-                }
-            }
-            drmModeFreeProperty(prop);
-            if (index > -1)
-                break;
-        }
-        drmModeFreeObjectProperties(props);
-        if (index > -1)
-            break;
-    }
-
-    if (index == -1) {
-        MP_VERBOSE(wl, "Unable to get DRM plane: %s\n", mp_strerror(errno));
-        goto done;
-    }
-
-    plane = drmModeGetPlane(fd, res->planes[index]);
-    tranche->num_planar_formats = plane->count_formats;
-    tranche->planar_formats = talloc_zero_array(tranche, int, tranche->num_planar_formats);
-
-    for (int i = 0; i < tranche->num_planar_formats; ++i) {
-        MP_DBG(wl, "DRM primary plane supports drm format: %s\n", mp_tag_str(plane->formats[i]));
-        tranche->planar_formats[i] = plane->formats[i];
-    }
-
-done:
-    drmModeFreePlane(plane);
-    drmModeFreePlaneResources(res);
-    drmFreeDevice(&device);
-#endif
 }
 
 static int get_mods(struct vo_wayland_seat *s)
@@ -2157,6 +3064,26 @@ static int get_mods(struct vo_wayland_seat *s)
             modifiers |= mods[n];
     }
     return modifiers;
+}
+
+static void get_compositor_preferred_description(struct vo_wayland_state *wl, bool parametric)
+{
+#if HAVE_WAYLAND_PROTOCOLS_1_41
+    struct vo_wayland_preferred_description_info *wd = talloc_zero(NULL, struct vo_wayland_preferred_description_info);
+    wd->wl = wl;
+    wd->is_parametric = parametric;
+
+    struct wp_image_description_v1 *image_description;
+    if (parametric) {
+        image_description = wp_color_management_surface_feedback_v1_get_preferred_parametric(wl->color_surface_feedback);
+    } else {
+        image_description = wp_color_management_surface_feedback_v1_get_preferred(wl->color_surface_feedback);
+    }
+    struct wp_image_description_info_v1 *description_info =
+        wp_image_description_v1_get_information(image_description);
+    wp_image_description_info_v1_add_listener(description_info, &image_description_info_listener, wd);
+    wp_image_description_v1_destroy(image_description);
+#endif
 }
 
 static void get_shape_device(struct vo_wayland_state *wl, struct vo_wayland_seat *s)
@@ -2243,6 +3170,12 @@ static int lookupkey(int key)
     if (!mpkey)
         mpkey = lookup_keymap_table(keymap, key);
 
+    // XFree86 keysym range; typically contains obscure "extra" keys
+    static_assert(MP_KEY_UNKNOWN_RESERVED_START + (0x1008FFFF - 0x10080000) <=
+                  MP_KEY_UNKNOWN_RESERVED_LAST, "");
+    if (!mpkey && key >= 0x10080001 && key <= 0x1008FFFF)
+        mpkey = MP_KEY_UNKNOWN_RESERVED_START + (key - 0x10080000);
+
     return mpkey;
 }
 
@@ -2298,21 +3231,25 @@ static int handle_round(int scale, int n)
     return (scale * n + WAYLAND_SCALE_FACTOR / 2) / WAYLAND_SCALE_FACTOR;
 }
 
-static void initialize_color_maps(struct vo_wayland_state *wl)
+static bool hdr_metadata_valid(struct pl_hdr_metadata *hdr)
 {
-    // -1 indicates unsupported
-    for (int i = 0; i < PL_COLOR_PRIM_COUNT; i++)
-        wl->primaries_map[i] = -1;
-    for (int i = 0; i < PL_COLOR_TRC_COUNT; i++)
-        wl->transfer_map[i] = -1;
-}
+    // Always return a hard failure if this condition fails.
+    if (hdr->min_luma >= hdr->max_luma)
+        return false;
 
-static void prepare_resize(struct vo_wayland_state *wl)
-{
-    int32_t width = mp_rect_w(wl->geometry) / wl->scaling_factor;
-    int32_t height = mp_rect_h(wl->geometry) / wl->scaling_factor;
-    xdg_surface_set_window_geometry(wl->xdg_surface, 0, 0, width, height);
-    wl->pending_vo_events |= VO_EVENT_RESIZE;
+    // If max_cll or max_fall are invalid, set them to zero.
+    if (hdr->max_cll && (hdr->max_cll <= hdr->min_luma || hdr->max_cll > hdr->max_luma))
+        hdr->max_cll = 0;
+
+    if (hdr->max_fall && (hdr->max_fall <= hdr->min_luma || hdr->max_fall > hdr->max_luma))
+        hdr->max_fall = 0;
+
+    if (hdr->max_cll && hdr->max_fall && hdr->max_fall > hdr->max_cll) {
+        hdr->max_cll = 0;
+        hdr->max_fall = 0;
+    }
+
+    return true;
 }
 
 static void request_decoration_mode(struct vo_wayland_state *wl, uint32_t mode)
@@ -2367,7 +3304,61 @@ static void remove_output(struct vo_wayland_output *out)
     talloc_free(out->make);
     talloc_free(out->model);
     talloc_free(out);
-    return;
+}
+
+static void remove_tablet(struct vo_wayland_tablet *tablet)
+{
+    struct vo_wayland_state *wl = tablet->wl;
+    MP_VERBOSE(wl, "Removing tablet %p\n", tablet->tablet);
+
+    wl_list_remove(&tablet->link);
+    zwp_tablet_v2_destroy(tablet->tablet);
+    talloc_free(tablet);
+}
+
+static void remove_tablet_tool(struct vo_wayland_tablet_tool *tablet_tool)
+{
+    struct vo_wayland_state *wl = tablet_tool->wl;
+    struct vo_wayland_seat *seat = tablet_tool->seat;
+    MP_VERBOSE(wl, "Removing tablet tool %p\n", tablet_tool->tablet_tool);
+
+    wl_list_remove(&tablet_tool->link);
+#if HAVE_WAYLAND_PROTOCOLS_1_32
+    if (seat->cursor_shape_device)
+        wp_cursor_shape_device_v1_destroy(tablet_tool->cursor_shape_device);
+#endif
+    zwp_tablet_tool_v2_destroy(tablet_tool->tablet_tool);
+    talloc_free(tablet_tool);
+}
+
+static void remove_tablet_pad(struct vo_wayland_tablet_pad *tablet_pad)
+{
+    struct vo_wayland_state *wl = tablet_pad->wl;
+    MP_VERBOSE(wl, "Removing tablet pad %p\n", tablet_pad->tablet_pad);
+
+    struct vo_wayland_tablet_pad_group *tablet_pad_group, *tablet_pad_group_tmp;
+    wl_list_for_each_safe(tablet_pad_group, tablet_pad_group_tmp, &tablet_pad->tablet_pad_group_list, link) {
+        struct vo_wayland_tablet_pad_ring *tablet_pad_ring, *tablet_pad_ring_tmp;
+        wl_list_for_each_safe(tablet_pad_ring, tablet_pad_ring_tmp, &tablet_pad_group->tablet_pad_ring_list, link) {
+            wl_list_remove(&tablet_pad_ring->link);
+            zwp_tablet_pad_ring_v2_destroy(tablet_pad_ring->tablet_pad_ring);
+            talloc_free(tablet_pad_ring);
+        }
+        struct vo_wayland_tablet_pad_strip *tablet_pad_strip, *tablet_pad_strip_tmp;
+        wl_list_for_each_safe(tablet_pad_strip, tablet_pad_strip_tmp, &tablet_pad_group->tablet_pad_strip_list, link) {
+            wl_list_remove(&tablet_pad_strip->link);
+            zwp_tablet_pad_strip_v2_destroy(tablet_pad_strip->tablet_pad_strip);
+            talloc_free(tablet_pad_strip);
+        }
+
+        wl_list_remove(&tablet_pad_group->link);
+        zwp_tablet_pad_group_v2_destroy(tablet_pad_group->tablet_pad_group);
+        talloc_free(tablet_pad_group);
+    }
+
+    wl_list_remove(&tablet_pad->link);
+    zwp_tablet_pad_v2_destroy(tablet_pad->tablet_pad);
+    talloc_free(tablet_pad);
 }
 
 static void remove_seat(struct vo_wayland_seat *seat)
@@ -2385,8 +3376,10 @@ static void remove_seat(struct vo_wayland_seat *seat)
         wl_pointer_destroy(seat->pointer);
     if (seat->touch)
         wl_touch_destroy(seat->touch);
-    if (seat->dnd_ddev)
-        wl_data_device_destroy(seat->dnd_ddev);
+    if (seat->data_device)
+        wl_data_device_destroy(seat->data_device);
+    if (seat->text_input)
+        zwp_text_input_v3_destroy(seat->text_input->text_input);
 #if HAVE_WAYLAND_PROTOCOLS_1_32
     if (seat->cursor_shape_device)
         wp_cursor_shape_device_v1_destroy(seat->cursor_shape_device);
@@ -2396,78 +3389,139 @@ static void remove_seat(struct vo_wayland_seat *seat)
     if (seat->xkb_state)
         xkb_state_unref(seat->xkb_state);
 
+    struct vo_wayland_tablet_pad *tablet_pad, *tablet_pad_tmp;
+    wl_list_for_each_safe(tablet_pad, tablet_pad_tmp, &seat->tablet_pad_list, link)
+        remove_tablet_pad(tablet_pad);
+
+    struct vo_wayland_tablet_tool *tablet_tool, *tablet_tool_tmp;
+    wl_list_for_each_safe(tablet_tool, tablet_tool_tmp, &seat->tablet_tool_list, link)
+        remove_tablet_tool(tablet_tool);
+
+    struct vo_wayland_tablet *tablet, *tablet_tmp;
+    wl_list_for_each_safe(tablet, tablet_tmp, &seat->tablet_list, link)
+        remove_tablet(tablet);
+
+    if (seat->tablet_seat)
+        zwp_tablet_seat_v2_destroy(seat->tablet_seat);
+
+    destroy_offer(seat->pending_offer);
+    destroy_offer(seat->dnd_offer);
+    destroy_offer(seat->selection_offer);
+
+    if (seat->data_source)
+        wl_data_source_destroy(seat->data_source);
+
     wl_seat_destroy(seat->seat);
     talloc_free(seat);
-    return;
 }
 
-static void reset_color_management(struct vo_wayland_state *wl)
+static void seat_create_data_source(struct vo_wayland_seat *seat)
 {
-    if (!wl->color_surface)
-        return;
-
-    if (wl->image_creator_params)
-        xx_image_description_creator_params_v4_destroy(wl->image_creator_params);
-
-    if (wl->image_description) {
-        xx_color_management_surface_v4_unset_image_description(wl->color_surface);
-        xx_image_description_v4_destroy(wl->image_description);
-        wl->image_description = NULL;
-    }
-
-    wl->image_creator_params = xx_color_manager_v4_new_parametric_creator(wl->color_manager);
-    wl->unsupported_colorspace = false;
+    seat->data_source = wl_data_device_manager_create_data_source(seat->wl->devman);
+    wl_data_source_offer(seat->data_source, "text/plain;charset=utf-8");
+    wl_data_source_offer(seat->data_source, "text/plain");
+    wl_data_source_offer(seat->data_source, "text");
+    wl_data_source_add_listener(seat->data_source, &data_source_listener, seat);
+    wl_data_device_set_selection(seat->data_device, seat->data_source, seat->last_serial);
 }
 
-static int set_colorspace(struct vo_wayland_state *wl)
+static void seat_create_data_device(struct vo_wayland_seat *seat)
 {
-    struct pl_color_space color = wl->target_params.color;
-    int xx_primaries = wl->primaries_map[color.primaries];
-    int xx_transfer = wl->transfer_map[color.transfer];
+    seat->data_device = wl_data_device_manager_get_data_device(seat->wl->devman, seat->seat);
+    wl_data_device_add_listener(seat->data_device, &data_device_listener, seat);
+}
 
-    if (xx_primaries == -1)
-        MP_VERBOSE(wl, "Compositor does not support color primary: %s\n", m_opt_choice_str(pl_csp_prim_names, color.primaries));
+static void seat_create_tablet_seat(struct vo_wayland_state *wl, struct vo_wayland_seat *seat)
+{
+    seat->tablet_seat = zwp_tablet_manager_v2_get_tablet_seat(wl->wp_tablet_manager, seat->seat);
+    zwp_tablet_seat_v2_add_listener(seat->tablet_seat, &tablet_seat_listener, seat);
+}
 
-    if (xx_transfer == -1)
-        MP_VERBOSE(wl, "Compositor does not support transfer function: %s\n", m_opt_choice_str(pl_csp_trc_names, color.transfer));
-
-    if (xx_primaries == -1 || xx_transfer == -1) {
-        wl->unsupported_colorspace = true;
-        return -1;
-    }
-
-    xx_image_description_creator_params_v4_set_primaries_named(wl->image_creator_params, xx_primaries);
-    xx_image_description_creator_params_v4_set_tf_named(wl->image_creator_params, xx_transfer);
-    return 0;
+static void seat_create_text_input(struct vo_wayland_seat *seat)
+{
+    seat->text_input = talloc_zero(seat, struct vo_wayland_text_input);
+    seat->text_input->text_input = zwp_text_input_manager_v3_get_text_input(seat->wl->text_input_manager, seat->seat);
+    zwp_text_input_v3_add_listener(seat->text_input->text_input, &text_input_listener, seat);
 }
 
 static void set_color_management(struct vo_wayland_state *wl)
 {
-    struct mp_image_params target_params = vo_get_target_params(wl->vo);
-    if (!wl->color_surface || wl->unsupported_colorspace || pl_color_space_equal(&target_params.color, &wl->target_params.color))
+#if HAVE_WAYLAND_PROTOCOLS_1_41
+    if (!wl->color_surface)
         return;
 
-    wl->target_params = target_params;
-    reset_color_management(wl);
-    if (set_colorspace(wl))
+    wp_color_management_surface_v1_unset_image_description(wl->color_surface);
+
+    struct pl_color_space color = wl->target_params.color;
+    int primaries = wl->primaries_map[color.primaries];
+    int transfer = wl->transfer_map[color.transfer];
+    if (!primaries)
+        MP_VERBOSE(wl, "Compositor does not support color primary: %s\n", m_opt_choice_str(pl_csp_prim_names, color.primaries));
+    if (!transfer)
+        MP_VERBOSE(wl, "Compositor does not support transfer function: %s\n", m_opt_choice_str(pl_csp_trc_names, color.transfer));
+    if (!primaries || !transfer)
         return;
+
+    struct wp_image_description_creator_params_v1 *image_creator_params =
+        wp_color_manager_v1_create_parametric_creator(wl->color_manager);
+    wp_image_description_creator_params_v1_set_primaries_named(image_creator_params, primaries);
+    wp_image_description_creator_params_v1_set_tf_named(image_creator_params, transfer);
+
+    pl_color_space_infer(&wl->target_params.color);
     struct pl_hdr_metadata hdr = wl->target_params.color.hdr;
-    if (wl->supports_display_primaries) {
-        xx_image_description_creator_params_v4_set_mastering_display_primaries(wl->image_creator_params,
-                hdr.prim.red.x * WAYLAND_COLOR_FACTOR, hdr.prim.red.y * WAYLAND_COLOR_FACTOR, hdr.prim.green.x * WAYLAND_COLOR_FACTOR,
-                hdr.prim.green.y * WAYLAND_COLOR_FACTOR, hdr.prim.blue.x * WAYLAND_COLOR_FACTOR, hdr.prim.blue.y * WAYLAND_COLOR_FACTOR,
-                hdr.prim.white.x * WAYLAND_COLOR_FACTOR, hdr.prim.white.y * WAYLAND_COLOR_FACTOR);
+    bool is_hdr = pl_color_transfer_is_hdr(color.transfer);
+    bool use_metadata = hdr_metadata_valid(&hdr);
+    if (!use_metadata)
+        MP_VERBOSE(wl, "supplied HDR metadata does not conform to the wayland color management protocol. It will not be used.\n");
+    if (wl->supports_display_primaries && is_hdr && use_metadata) {
+        wp_image_description_creator_params_v1_set_mastering_display_primaries(image_creator_params,
+                lrintf(hdr.prim.red.x * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.red.y * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.green.x * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.green.y * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.blue.x * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.blue.y * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.white.x * WAYLAND_COLOR_FACTOR),
+                lrintf(hdr.prim.white.y * WAYLAND_COLOR_FACTOR));
 
-        // No clear enum in the protocol to indicate if these are supposed
-        // to work or not so just hope they do if setting display
-        // primaries is supported.
-        xx_image_description_creator_params_v4_set_mastering_luminance(wl->image_creator_params, hdr.min_luma * WAYLAND_COLOR_FACTOR, hdr.max_luma);
-        xx_image_description_creator_params_v4_set_max_cll(wl->image_creator_params, hdr.max_cll);
-        xx_image_description_creator_params_v4_set_max_fall(wl->image_creator_params, hdr.max_fall);
+        wp_image_description_creator_params_v1_set_mastering_luminance(image_creator_params,
+            lrintf(hdr.min_luma * WAYLAND_MIN_LUM_FACTOR), lrintf(hdr.max_luma));
+        wp_image_description_creator_params_v1_set_max_cll(image_creator_params, lrintf(hdr.max_cll));
+        wp_image_description_creator_params_v1_set_max_fall(image_creator_params, lrintf(hdr.max_fall));
     }
-    wl->image_description = xx_image_description_creator_params_v4_create(wl->image_creator_params);
-    wl->image_creator_params = NULL;
-    xx_image_description_v4_add_listener(wl->image_description, &image_description_listener, wl);
+    struct wp_image_description_v1 *image_description = wp_image_description_creator_params_v1_create(image_creator_params);
+    wp_image_description_v1_add_listener(image_description, &image_description_listener, wl);
+#endif
+}
+
+static void set_color_representation(struct vo_wayland_state *wl)
+{
+#if HAVE_WAYLAND_PROTOCOLS_1_44
+    if (!wl->color_representation_manager)
+        return;
+
+    if (wl->color_representation_surface)
+        wp_color_representation_surface_v1_destroy(wl->color_representation_surface);
+
+    wl->color_representation_surface =
+        wp_color_representation_manager_v1_get_surface(wl->color_representation_manager, wl->callback_surface);
+
+    struct pl_color_repr repr = wl->target_params.repr;
+    int alpha = wl->alpha_map[repr.alpha];
+    int coefficients = wl->coefficients_map[repr.sys];
+    int range = repr.levels == PL_COLOR_LEVELS_FULL ? wl->range_map[repr.sys] :
+                                wl->range_map[repr.sys + PL_COLOR_SYSTEM_COUNT];
+    int chroma_location = map_supported_chroma_location(wl->target_params.chroma_location);
+
+    if (coefficients && range)
+        wp_color_representation_surface_v1_set_coefficients_and_range(wl->color_representation_surface, coefficients, range);
+
+    if (alpha)
+        wp_color_representation_surface_v1_set_alpha_mode(wl->color_representation_surface, alpha);
+
+    if (chroma_location)
+        wp_color_representation_surface_v1_set_chroma_location(wl->color_representation_surface, chroma_location);
+#endif
 }
 
 static void set_content_type(struct vo_wayland_state *wl)
@@ -2485,9 +3539,31 @@ static void set_content_type(struct vo_wayland_state *wl)
 static void set_cursor_shape(struct vo_wayland_seat *s)
 {
 #if HAVE_WAYLAND_PROTOCOLS_1_32
-    wp_cursor_shape_device_v1_set_shape(s->cursor_shape_device, s->pointer_enter_serial,
-                                        WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    if (s->cursor_shape_device)
+        wp_cursor_shape_device_v1_set_shape(s->cursor_shape_device, s->pointer_enter_serial,
+                                            WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+
+    struct vo_wayland_tablet_tool *tablet_tool;
+    wl_list_for_each(tablet_tool, &s->tablet_tool_list, link) {
+        if (tablet_tool->cursor_shape_device)
+            wp_cursor_shape_device_v1_set_shape(tablet_tool->cursor_shape_device,
+                                                tablet_tool->proximity_serial,
+                                                WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    }
 #endif
+}
+
+static void set_cursor(struct vo_wayland_seat *s, struct wl_surface *cursor_surface,
+                       int32_t hotspot_x, int32_t hotspot_y)
+{
+    wl_pointer_set_cursor(s->pointer, s->pointer_enter_serial,
+                          cursor_surface, hotspot_x, hotspot_y);
+
+    struct vo_wayland_tablet_tool *tablet_tool;
+    wl_list_for_each(tablet_tool, &s->tablet_tool_list, link) {
+        zwp_tablet_tool_v2_set_cursor(tablet_tool->tablet_tool, tablet_tool->proximity_serial,
+                                      cursor_surface, hotspot_x, hotspot_y);
+    }
 }
 
 static int set_cursor_visibility(struct vo_wayland_seat *s, bool on)
@@ -2497,7 +3573,7 @@ static int set_cursor_visibility(struct vo_wayland_seat *s, bool on)
     struct vo_wayland_state *wl = s->wl;
     wl->cursor_visible = on;
     if (on) {
-        if (s->cursor_shape_device) {
+        if (s->wl->cursor_shape_manager) {
             set_cursor_shape(s);
         } else {
             if (spawn_cursor(wl))
@@ -2507,8 +3583,7 @@ static int set_cursor_visibility(struct vo_wayland_seat *s, bool on)
             if (!buffer)
                 return VO_FALSE;
             double scale = MPMAX(wl->scaling_factor, 1);
-            wl_pointer_set_cursor(s->pointer, s->pointer_enter_serial, wl->cursor_surface,
-                                  img->hotspot_x / scale, img->hotspot_y / scale);
+            set_cursor(s, wl->cursor_surface, img->hotspot_x / scale, img->hotspot_y / scale);
             wp_viewport_set_destination(wl->cursor_viewport, lround(img->width / scale),
                                         lround(img->height / scale));
             wl_surface_attach(wl->cursor_surface, buffer, 0, 0);
@@ -2516,7 +3591,7 @@ static int set_cursor_visibility(struct vo_wayland_seat *s, bool on)
         }
         wl_surface_commit(wl->cursor_surface);
     } else {
-        wl_pointer_set_cursor(s->pointer, s->pointer_enter_serial, NULL, 0, 0);
+        set_cursor(s, NULL, 0, 0);
     }
     return VO_TRUE;
 }
@@ -2564,7 +3639,7 @@ static void set_geometry(struct vo_wayland_state *wl, bool resize)
     if (resize) {
         if (!wl->locked_size)
             wl->geometry = wl->window_size;
-        prepare_resize(wl);
+        wl->pending_vo_events |= VO_EVENT_RESIZE;
     }
 }
 
@@ -2698,6 +3773,21 @@ static void toggle_fullscreen(struct vo_wayland_state *wl)
     }
 }
 
+static void toggle_ime(struct vo_wayland_state *wl)
+{
+    struct vo_wayland_seat *seat;
+    wl_list_for_each(seat, &wl->seat_list, link) {
+        struct vo_wayland_text_input *ti = seat->text_input;
+        if (!ti)
+            continue;
+        if (wl->opts->input_ime) {
+            enable_ime(ti);
+        } else {
+            disable_ime(ti);
+        }
+    }
+}
+
 static void toggle_maximized(struct vo_wayland_state *wl)
 {
     if (wl->opts->window_maximized) {
@@ -2720,9 +3810,8 @@ static void update_output_scaling(struct vo_wayland_state *wl)
     wl->scaling_factor = wl->scaling / WAYLAND_SCALE_FACTOR;
     rescale_geometry(wl, old_scale);
     set_geometry(wl, false);
-    prepare_resize(wl);
     wl->need_rescale = false;
-    wl->pending_vo_events |= VO_EVENT_DPI;
+    wl->pending_vo_events |= VO_EVENT_DPI | VO_EVENT_RESIZE;
 }
 
 static void update_output_geometry(struct vo_wayland_state *wl, struct mp_rect old_geometry,
@@ -2749,7 +3838,7 @@ static void update_output_geometry(struct vo_wayland_state *wl, struct mp_rect o
     }
 
     if (!mp_rect_equals(&old_geometry, &wl->geometry) || force_resize)
-        prepare_resize(wl);
+        wl->pending_vo_events |= VO_EVENT_RESIZE;
 }
 
 static int update_window_title(struct vo_wayland_state *wl, const char *title)
@@ -2800,7 +3889,7 @@ static void begin_dragging(struct vo_wayland_state *wl)
 {
     struct vo_wayland_seat *s = wl->last_button_seat;
     if (!mp_input_test_dragging(wl->vo->input_ctx, wl->mouse_x, wl->mouse_y) &&
-        !wl->locked_size && s)
+        !wl->opts->fullscreen && s)
     {
         xdg_toplevel_move(wl->xdg_toplevel, s->seat, s->pointer_button_serial);
         wl->last_button_seat = NULL;
@@ -2840,6 +3929,12 @@ bool vo_wayland_check_visible(struct vo *vo)
     return render;
 }
 
+struct pl_color_space vo_wayland_preferred_csp(struct vo *vo)
+{
+    struct vo_wayland_state *wl = vo->wl;
+    return wl->preferred_csp;
+}
+
 int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
 {
     struct vo_wayland_state *wl = vo->wl;
@@ -2848,7 +3943,12 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
 
     switch (request) {
     case VOCTRL_CHECK_EVENTS: {
-        check_dnd_fd(wl);
+        wayland_dispatch_events(wl, 1, 0);
+        struct vo_wayland_seat *seat;
+        wl_list_for_each(seat, &wl->seat_list, link) {
+            check_fd(wl, seat->dnd_offer, true);
+            check_fd(wl, seat->selection_offer, false);
+        }
         *events |= wl->pending_vo_events;
         if (*events & VO_EVENT_RESIZE) {
             *events |= VO_EVENT_EXPOSE;
@@ -2888,6 +3988,8 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
                 set_content_type(wl);
             if (opt == &opts->cursor_passthrough)
                 set_input_region(wl, opts->cursor_passthrough);
+            if (opt == &opts->input_ime)
+                toggle_ime(wl);
             if (opt == &opts->fullscreen)
                 toggle_fullscreen(wl);
             if (opt == &opts->window_maximized)
@@ -2914,6 +4016,15 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
     }
     case VOCTRL_GET_DISPLAY_NAMES: {
         *(char ***)arg = get_displays_spanned(wl);
+        return VO_TRUE;
+    }
+    case VOCTRL_GET_ICC_PROFILE: {
+        if (!wl->supports_icc)
+            MP_WARN(wl, "Compositor does not support ICC profiles!\n");
+        if (!wl->icc_file)
+            return VO_FALSE;
+        MP_VERBOSE(wl, "Retrieving ICC profile from compositor.\n");
+        *(bstr *)arg = bstrdup(NULL, (bstr){wl->icc_file, wl->icc_size});
         return VO_TRUE;
     }
     case VOCTRL_GET_UNFS_WINDOW_SIZE: {
@@ -2943,7 +4054,7 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
                     return VO_TRUE;
             }
             wl->geometry = wl->window_size;
-            prepare_resize(wl);
+            wl->pending_vo_events |= VO_EVENT_RESIZE;
         }
         return VO_TRUE;
     }
@@ -2989,6 +4100,31 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
         return set_screensaver_inhibitor(wl, true);
     case VOCTRL_RESTORE_SCREENSAVER:
         return set_screensaver_inhibitor(wl, false);
+    case VOCTRL_GET_CLIPBOARD: {
+        struct voctrl_clipboard *vc = arg;
+        // TODO: add primary selection support
+        if (vc->params.target != CLIPBOARD_TARGET_CLIPBOARD || vc->params.type != CLIPBOARD_DATA_TEXT)
+            return VO_NOTAVAIL;
+        vc->data.type = CLIPBOARD_DATA_TEXT;
+        vc->data.u.text = bstrto0(vc->talloc_ctx, wl->selection_text);
+        return VO_TRUE;
+    }
+    case VOCTRL_SET_CLIPBOARD: {
+        struct voctrl_clipboard *vc = arg;
+        // TODO: add primary selection support
+        if (vc->params.target != CLIPBOARD_TARGET_CLIPBOARD || vc->params.type != CLIPBOARD_DATA_TEXT)
+            return VO_NOTIMPL;
+        if (vc->data.type != CLIPBOARD_DATA_TEXT)
+            return VO_NOTIMPL;
+        talloc_free(wl->selection_text.start);
+        wl->selection_text = bstrdup(wl, bstr0(vc->data.u.text));
+        struct vo_wayland_seat *seat;
+        wl_list_for_each(seat, &wl->seat_list, link) {
+            if (seat->last_serial && !seat->data_source && wl->devman)
+                seat_create_data_source(seat);
+        }
+        return VO_TRUE;
+    }
     }
 
     return VO_NOTIMPL;
@@ -2998,8 +4134,14 @@ void vo_wayland_handle_color(struct vo_wayland_state *wl)
 {
     if (!wl->vo->target_params)
         return;
-
+    struct mp_image_params target_params = vo_get_target_params(wl->vo);
+    if (pl_color_space_equal(&target_params.color, &wl->target_params.color) &&
+        pl_color_repr_equal(&target_params.repr, &wl->target_params.repr) &&
+        target_params.chroma_location == wl->target_params.chroma_location)
+        return;
+    wl->target_params = target_params;
     set_color_management(wl);
+    set_color_representation(wl);
 }
 
 
@@ -3011,36 +4153,23 @@ void vo_wayland_handle_scale(struct vo_wayland_state *wl)
 
 bool vo_wayland_valid_format(struct vo_wayland_state *wl, uint32_t drm_format, uint64_t modifier)
 {
-#if HAVE_DRM
     // Tranches are grouped by preference and the first tranche is at the end of
     // the list. It doesn't really matter for us since we search everything
     // anyways, but might as well start from the most preferred tranche.
     struct vo_wayland_tranche *tranche;
     wl_list_for_each_reverse(tranche, &wl->tranche_list, link) {
-        bool supported_compositor_format = false;
         struct drm_format *formats = tranche->compositor_formats;
         for (int i = 0; i < tranche->num_compositor_formats; ++i) {
-            if (formats[i].format != drm_format)
-                continue;
-            if (modifier == formats[i].modifier && modifier != DRM_FORMAT_MOD_INVALID)
+            if (drm_format == formats[i].format && modifier == formats[i].modifier)
                 return true;
-            supported_compositor_format = true;
-        }
-
-        if (supported_compositor_format && tranche->planar_formats) {
-            for (int i = 0; i < tranche->num_planar_formats; i++) {
-                if (drm_format == tranche->planar_formats[i])
-                    return true;
-            }
         }
     }
-#endif
     return false;
 }
 
 bool vo_wayland_init(struct vo *vo)
 {
-    if (!getenv("WAYLAND_DISPLAY"))
+    if (!getenv("WAYLAND_DISPLAY") && !getenv("WAYLAND_SOCKET"))
         goto err;
 
     vo->wl = talloc_zero(NULL, struct vo_wayland_state);
@@ -3056,9 +4185,10 @@ bool vo_wayland_init(struct vo *vo)
         .scaling = WAYLAND_SCALE_FACTOR,
         .wakeup_pipe = {-1, -1},
         .display_fd = -1,
-        .dnd_fd = -1,
         .cursor_visible = true,
+        .last_zero_copy = -1,
         .opts_cache = m_config_cache_alloc(wl, vo->global, &vo_sub_opts),
+        .preferred_csp = (struct pl_color_space) { .transfer = PL_COLOR_TRC_SRGB, .primaries = PL_COLOR_PRIM_BT_709 },
     };
     wl->opts = wl->opts_cache->opts;
 
@@ -3109,15 +4239,31 @@ bool vo_wayland_init(struct vo *vo)
     if (create_xdg_surface(wl))
         goto err;
 
+    if (wl->xdg_activation) {
+        xdg_activate(wl);
+    } else {
+        MP_VERBOSE(wl, "Compositor doesn't support the %s protocol!\n",
+            xdg_activation_v1_interface.name);
+    }
+
     if (wl->subcompositor) {
         wl->osd_subsurface = wl_subcompositor_get_subsurface(wl->subcompositor, wl->osd_surface, wl->video_surface);
         wl->video_subsurface = wl_subcompositor_get_subsurface(wl->subcompositor, wl->video_surface, wl->surface);
     }
 
+#if HAVE_WAYLAND_PROTOCOLS_1_41
     if (!wl->color_manager) {
         MP_VERBOSE(wl, "Compositor doesn't support the %s protocol!\n",
-                   xx_color_manager_v4_interface.name);
+                   wp_color_manager_v1_interface.name);
     }
+#endif
+
+#if HAVE_WAYLAND_PROTOCOLS_1_44
+    if (!wl->color_representation_manager) {
+        MP_VERBOSE(wl, "Compositor doesn't support the %s protocol!\n",
+                   wp_color_representation_surface_v1_interface.name);
+    }
+#endif
 
     if (wl->content_type_manager) {
         wl->content_type = wp_content_type_manager_v1_get_surface_content_type(wl->content_type_manager, wl->surface);
@@ -3146,11 +4292,11 @@ bool vo_wayland_init(struct vo *vo)
     }
 #endif
 
-    if (wl->dnd_devman) {
+    if (wl->devman) {
         struct vo_wayland_seat *seat;
         wl_list_for_each(seat, &wl->seat_list, link) {
-            seat->dnd_ddev = wl_data_device_manager_get_data_device(wl->dnd_devman, seat->seat);
-            wl_data_device_add_listener(seat->dnd_ddev, &data_device_listener, seat);
+            if (!seat->data_device)
+                seat_create_data_device(seat);
         }
     } else {
         MP_VERBOSE(wl, "Compositor doesn't support the %s (ver. 3) protocol!\n",
@@ -3189,6 +4335,28 @@ bool vo_wayland_init(struct vo *vo)
                    zwp_idle_inhibit_manager_v1_interface.name);
     }
 
+    if (wl->text_input_manager) {
+        struct vo_wayland_seat *seat;
+        wl_list_for_each(seat, &wl->seat_list, link) {
+            if (!seat->text_input)
+                seat_create_text_input(seat);
+        }
+    } else {
+        MP_VERBOSE(wl, "Compositor doesn't support the %s protocol!\n",
+                    zwp_text_input_manager_v3_interface.name);
+    }
+
+    if (wl->wp_tablet_manager) {
+        struct vo_wayland_seat *seat;
+        wl_list_for_each(seat, &wl->seat_list, link) {
+            if (!seat->tablet_seat)
+                seat_create_tablet_seat(wl, seat);
+        }
+    } else {
+        MP_VERBOSE(wl, "Compositor doesn't support the %s protocol!\n",
+                    zwp_tablet_manager_v2_interface.name);
+    }
+
     wl->display_fd = wl_display_get_fd(wl->display);
 
     update_app_id(wl);
@@ -3202,12 +4370,32 @@ bool vo_wayland_init(struct vo *vo)
      * before mpv does anything else. */
     wl_display_roundtrip(wl->display);
 
-    // Only bind to vo_dmabuf_wayland for now to avoid conflicting with VK_hdr_layer
-    if (wl->color_manager && wl->supports_parametric && !strcmp(wl->vo->driver->name, "dmabuf-wayland")) {
-        wl->color_surface = xx_color_manager_v4_get_surface(wl->color_manager, wl->callback_surface);
-    } else {
-        MP_VERBOSE(wl, "Compositor does not support parametic image descriptions!\n");
+#if HAVE_WAYLAND_PROTOCOLS_1_41
+    // Only bind color surface to vo_dmabuf_wayland for now to avoid conflicting with graphics drivers
+    if (wl->color_manager && wl->supports_parametric && !strcmp(wl->vo->driver->name, "dmabuf-wayland"))
+        wl->color_surface = wp_color_manager_v1_get_surface(wl->color_manager, wl->callback_surface);
+
+    if (wl->color_manager && (wl->supports_parametric || wl->supports_icc)) {
+        wl->color_surface_feedback = wp_color_manager_v1_get_surface_feedback(wl->color_manager, wl->callback_surface);
+        wp_color_management_surface_feedback_v1_add_listener(wl->color_surface_feedback, &surface_feedback_listener, wl);
     }
+#endif
+
+    if (wl->supports_parametric)
+        get_compositor_preferred_description(wl, true);
+    else
+        MP_VERBOSE(wl, "Compositor does not support parametric image descriptions!\n");
+
+
+    struct gl_video_opts *gl_opts = mp_get_config_group(NULL, vo->global, &gl_video_conf);
+    if (wl->supports_icc) {
+        // dumb workaround for avoiding -Wunused-function
+        get_compositor_preferred_description(wl, false);
+    } else {
+        int msg_level = gl_opts->icc_opts->profile_auto ? MSGL_WARN : MSGL_V;
+        mp_msg(wl->log, msg_level, "Compositor does not support ICC profiles!\n");
+    }
+    talloc_free(gl_opts);
 
     return true;
 
@@ -3221,8 +4409,6 @@ bool vo_wayland_reconfig(struct vo *vo)
     struct vo_wayland_state *wl = vo->wl;
 
     MP_VERBOSE(wl, "Reconfiguring!\n");
-
-    reset_color_management(wl);
 
     if (!wl->current_output) {
         wl->current_output = find_output(wl);
@@ -3260,15 +4446,15 @@ bool vo_wayland_reconfig(struct vo *vo)
         wl->geometry_configured = true;
     }
 
-    prepare_resize(wl);
+    wl->pending_vo_events |= VO_EVENT_RESIZE;
 
     return true;
 }
 
 void vo_wayland_set_opaque_region(struct vo_wayland_state *wl, bool alpha)
 {
-    const int32_t width = mp_rect_w(wl->geometry);
-    const int32_t height = mp_rect_h(wl->geometry);
+    const int32_t width = lrint(mp_rect_w(wl->geometry) / wl->scaling_factor);
+    const int32_t height = lrint(mp_rect_h(wl->geometry) / wl->scaling_factor);
     if (!alpha) {
         struct wl_region *region = wl_compositor_create_region(wl->compositor);
         wl_region_add(region, 0, 0, width, height);
@@ -3285,11 +4471,10 @@ void vo_wayland_uninit(struct vo *vo)
     if (!wl)
         return;
 
-    if (wl->dnd_fd != -1)
-        close(wl->dnd_fd);
-    free_dnd_data(wl);
-
     mp_input_put_key(wl->vo->input_ctx, MP_INPUT_RELEASE_ALL);
+
+    // Ensure that any in-flight vo_wayland_preferred_description_info get deallocated.
+    wl_display_roundtrip(wl->display);
 
     if (wl->compositor)
         wl_compositor_destroy(wl->compositor);
@@ -3308,17 +4493,24 @@ void vo_wayland_uninit(struct vo *vo)
     if (wl->cursor_theme)
         wl_cursor_theme_destroy(wl->cursor_theme);
 
+#if HAVE_WAYLAND_PROTOCOLS_1_41
     if (wl->color_manager)
-        xx_color_manager_v4_destroy(wl->color_manager);
+        wp_color_manager_v1_destroy(wl->color_manager);
 
     if (wl->color_surface)
-        xx_color_management_surface_v4_destroy(wl->color_surface);
+        wp_color_management_surface_v1_destroy(wl->color_surface);
 
-    if (wl->image_creator_params)
-        xx_image_description_creator_params_v4_destroy(wl->image_creator_params);
+    if (wl->color_surface_feedback)
+        wp_color_management_surface_feedback_v1_destroy(wl->color_surface_feedback);
+#endif
 
-    if (wl->image_description)
-        xx_image_description_v4_destroy(wl->image_description);
+#if HAVE_WAYLAND_PROTOCOLS_1_44
+    if (wl->color_representation_manager)
+        wp_color_representation_manager_v1_destroy(wl->color_representation_manager);
+
+    if (wl->color_representation_surface)
+        wp_color_representation_surface_v1_destroy(wl->color_representation_surface);
+#endif
 
     if (wl->content_type)
         wp_content_type_v1_destroy(wl->content_type);
@@ -3326,11 +4518,8 @@ void vo_wayland_uninit(struct vo *vo)
     if (wl->content_type_manager)
         wp_content_type_manager_v1_destroy(wl->content_type_manager);
 
-    if (wl->dnd_devman)
-        wl_data_device_manager_destroy(wl->dnd_devman);
-
-    if (wl->dnd_offer)
-        wl_data_offer_destroy(wl->dnd_offer);
+    if (wl->devman)
+        wl_data_device_manager_destroy(wl->devman);
 
     if (wl->fback_pool)
         clean_feedback_pool(wl->fback_pool);
@@ -3349,6 +4538,9 @@ void vo_wayland_uninit(struct vo *vo)
 
     if (wl->idle_inhibit_manager)
         zwp_idle_inhibit_manager_v1_destroy(wl->idle_inhibit_manager);
+
+    if (wl->text_input_manager)
+        zwp_text_input_manager_v3_destroy(wl->text_input_manager);
 
     if (wl->presentation)
         wp_presentation_destroy(wl->presentation);
@@ -3401,6 +4593,9 @@ void vo_wayland_uninit(struct vo *vo)
     if (wl->wm_base)
         xdg_wm_base_destroy(wl->wm_base);
 
+    if (wl->xdg_activation)
+        xdg_activation_v1_destroy(wl->xdg_activation);
+
     if (wl->xdg_decoration_manager)
         zxdg_decoration_manager_v1_destroy(wl->xdg_decoration_manager);
 
@@ -3423,6 +4618,9 @@ void vo_wayland_uninit(struct vo *vo)
     struct vo_wayland_seat *seat, *seat_tmp;
     wl_list_for_each_safe(seat, seat_tmp, &wl->seat_list, link)
         remove_seat(seat);
+
+    if (wl->wp_tablet_manager)
+        zwp_tablet_manager_v2_destroy(wl->wp_tablet_manager);
 
     if (wl->display)
         wl_display_disconnect(wl->display);

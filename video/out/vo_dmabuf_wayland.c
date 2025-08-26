@@ -15,10 +15,13 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <libavutil/hwcontext_drm.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "config.h"
+
+#if HAVE_DRM
+#include <libavutil/hwcontext_drm.h>
+#endif
 
 #if HAVE_VAAPI
 #include <va/va_drmcommon.h>
@@ -221,30 +224,37 @@ done:
 static uintptr_t drmprime_surface_id(struct mp_image *src)
 {
     uintptr_t id = 0;
+#if HAVE_DRM
     struct AVDRMFrameDescriptor *desc = (AVDRMFrameDescriptor *)src->planes[0];
 
     AVDRMObjectDescriptor object = desc->objects[0];
     id = (uintptr_t)object.fd;
+#endif
     return id;
 }
 
 static bool drmprime_drm_format(struct vo *vo, struct mp_image *src)
 {
+    bool format = false;
+#if HAVE_DRM
     struct priv *p = vo->priv;
     struct AVDRMFrameDescriptor *desc = (AVDRMFrameDescriptor *)src->planes[0];
     if (!desc)
-        return false;
+        return format;
 
     // Just check the very first layer/plane.
     p->drm_format = desc->layers[0].format;
     int object_index = desc->layers[0].planes[0].object_index;
     p->drm_modifier = desc->objects[object_index].format_modifier;
-    return true;
+    format = true;
+#endif
+    return format;
 }
 
 static void drmprime_dmabuf_importer(struct buffer *buf, struct mp_image *src,
                                      struct zwp_linux_buffer_params_v1 *params)
 {
+#if HAVE_DRM
     int layer_no, plane_no;
     int max_planes = 0;
     const AVDRMFrameDescriptor *desc = (AVDRMFrameDescriptor *)src->planes[0];
@@ -267,6 +277,7 @@ static void drmprime_dmabuf_importer(struct buffer *buf, struct mp_image *src,
                                            plane.pitch, modifier >> 32, modifier & 0xffffffff);
         }
     }
+#endif
 }
 
 static intptr_t surface_id(struct vo *vo, struct mp_image *src)
@@ -388,10 +399,6 @@ static void destroy_osd_buffers(struct vo *vo)
     if (!vo->wl)
         return;
 
-    // Remove any existing buffer before we destroy them.
-    wl_surface_attach(vo->wl->osd_surface, NULL, 0, 0);
-    wl_surface_commit(vo->wl->osd_surface);
-
     struct priv *p = vo->priv;
     struct osd_buffer *osd_buf, *tmp;
     wl_list_for_each_safe(osd_buf, tmp, &p->osd_buffer_list, link) {
@@ -510,8 +517,9 @@ static void resize(struct vo *vo)
 
     const int width = mp_rect_w(wl->geometry);
     const int height = mp_rect_h(wl->geometry);
+    vo_get_src_dst_rects(vo, &src, &dst, &p->screen_osd_res);
 
-    if (width == 0 || height == 0)
+    if (width == 0 || height == 0 || mp_rect_w(dst) == 0 || mp_rect_h(dst) == 0)
         return;
 
     vo_wayland_set_opaque_region(wl, false);
@@ -545,6 +553,7 @@ static void resize(struct vo *vo)
     vo->target_params->w = mp_rect_w(dst);
     vo->target_params->h = mp_rect_h(dst);
     vo->target_params->rotate = (vo->params->rotate % 90) * 90;
+    vo->target_params->vflip = vo->params->vflip;
     mp_mutex_unlock(&vo->params_mutex);
 }
 
@@ -592,7 +601,7 @@ done:
     return draw;
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *p = vo->priv;
     struct vo_wayland_state *wl = vo->wl;
@@ -603,7 +612,7 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
     if (!vo_wayland_check_visible(vo)) {
         if (frame->current)
             talloc_free(frame);
-        return;
+        return VO_FALSE;
     }
 
     if (p->destroy_buffers)
@@ -641,17 +650,19 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
             p->osd_surface_is_mapped = false;
         }
     }
+
+    return VO_TRUE;
 }
 
 static void flip_page(struct vo *vo)
 {
     struct vo_wayland_state *wl = vo->wl;
 
-    wl_surface_commit(wl->video_surface);
     wl_surface_commit(wl->osd_surface);
+    wl_surface_commit(wl->video_surface);
     wl_surface_commit(wl->surface);
 
-    if (!wl->opts->wl_disable_vsync)
+    if (wl->opts->wl_internal_vsync)
         vo_wayland_wait_frame(wl);
 
     if (wl->use_present)
@@ -665,19 +676,35 @@ static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
         present_sync_get_info(wl->present, info);
 }
 
-static bool is_supported_fmt(int fmt)
-{
-    return (fmt == IMGFMT_DRMPRIME || fmt == IMGFMT_VAAPI);
-}
-
 static int query_format(struct vo *vo, int format)
 {
-    return is_supported_fmt(format);
+    return format == IMGFMT_DRMPRIME || format == IMGFMT_VAAPI;
 }
+
+static const int32_t transform_enum_lut[4][2] = {
+    {0, 6}, {1, 5}, {2, 4}, {3, 7},
+};
 
 static int reconfig(struct vo *vo, struct mp_image *img)
 {
     struct priv *p = vo->priv;
+
+    switch (img->imgfmt) {
+    case IMGFMT_VAAPI:
+        p->hwdec_type = HWDEC_VAAPI;
+        break;
+    case IMGFMT_DRMPRIME:
+        p->hwdec_type = HWDEC_DRMPRIME;
+        break;
+    default:
+        p->hwdec_type = HWDEC_NONE;
+    }
+
+    if (p->hwdec_type == HWDEC_NONE) {
+        MP_ERR(vo, "Format '%s' is not a valid hardware accelerated format!\n",
+               mp_imgfmt_to_name(img->imgfmt));
+        return VO_ERROR;
+    }
 
     if (img->params.force_window) {
         p->force_window = true;
@@ -711,7 +738,8 @@ done:
     vo->target_params = &p->target_params;
     mp_mutex_unlock(&vo->params_mutex);
 
-    wl_surface_set_buffer_transform(vo->wl->video_surface, img->params.rotate / 90);
+    wl_surface_set_buffer_transform(vo->wl->video_surface,
+        transform_enum_lut[img->params.rotate / 90][!!img->params.vflip]);
 
     // Immediately destroy all buffers if params change.
     destroy_buffers(vo);
@@ -777,7 +805,7 @@ static int preinit(struct vo *vo)
     if (!p->ctx)
         goto err;
 
-    assert(p->ctx->ra);
+    mp_assert(p->ctx->ra);
 
     if (!vo->wl->dmabuf || !vo->wl->dmabuf_feedback) {
         MP_FATAL(vo->wl, "Compositor doesn't support the %s (ver. 4) protocol!\n",
@@ -825,33 +853,10 @@ static int preinit(struct vo *vo)
         .global = p->global,
         .ra_ctx = p->ctx,
     };
-    ra_hwdec_ctx_init(&p->hwdec_ctx, vo->hwdec_devs, NULL, true);
 
-    // Loop through hardware accelerated formats and only request known
-    // supported formats.
-    for (int i = IMGFMT_VDPAU_OUTPUT; i < IMGFMT_AVPIXFMT_START; ++i) {
-        if (is_supported_fmt(i)) {
-            struct hwdec_imgfmt_request params = {
-                .imgfmt = i,
-                .probing = false,
-            };
-            ra_hwdec_ctx_load_fmt(&p->hwdec_ctx, vo->hwdec_devs, &params);
-        }
-    }
-
-    for (int i = 0; i < p->hwdec_ctx.num_hwdecs; i++) {
-        struct ra_hwdec *hw = p->hwdec_ctx.hwdecs[i];
-        if (ra_get_native_resource(p->ctx->ra, "VADisplay")) {
-            p->hwdec_type = HWDEC_VAAPI;
-        } else if (strcmp(hw->driver->name, "drmprime") == 0) {
-            p->hwdec_type = HWDEC_DRMPRIME;
-        }
-    }
-
-    if (p->hwdec_type == HWDEC_NONE) {
-        MP_ERR(vo, "No valid hardware decoding driver could be loaded!\n");
-        goto err;
-    }
+    // Initialize all possible hwdec drivers.
+    ra_hwdec_ctx_init(&p->hwdec_ctx, vo->hwdec_devs, "vaapi", false);
+    ra_hwdec_ctx_init(&p->hwdec_ctx, vo->hwdec_devs, "drmprime", false);
 
     p->src = (struct mp_rect){0, 0, 0, 0};
     return 0;
@@ -864,8 +869,10 @@ err:
 const struct vo_driver video_out_dmabuf_wayland = {
     .description = "Wayland dmabuf video output",
     .name = "dmabuf-wayland",
-    .caps = VO_CAP_ROTATE90,
-    .frame_owner = true,
+    .caps = VO_CAP_ROTATE90 |
+            VO_CAP_FRAMEOWNER |
+            VO_CAP_VFLIP |
+            0x0,
     .preinit = preinit,
     .query_format = query_format,
     .reconfig2 = reconfig,

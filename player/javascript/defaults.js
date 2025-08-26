@@ -246,10 +246,10 @@ mp.get_osd_margins = function get_osd_margins() {
 // {cb: fn, forced: bool, maybe input: str, repeatable: bool, complex: bool}
 var binds = new_cache();
 
-function dispatch_key_binding(name, state, key_name, key_text) {
+function dispatch_key_binding(name, state, key_name, key_text, scale, arg) {
     var cb = binds[name] ? binds[name].cb : false;
     if (cb)  // "script-binding [<script_name>/]<name>" command was invoked
-        cb(state, key_name, key_text);
+        cb(state, key_name, key_text, scale, arg);
 }
 
 var binds_tid = 0;  // flush timer id. actual id's are always true-thy
@@ -307,13 +307,15 @@ function add_binding(forced, key, name, fn, opts) {
             fn({event: "press", is_mouse: false});
         });
         var KEY_STATES = { u: "up", d: "down", r: "repeat", p: "press" };
-        key_data.cb = function key_cb(state, key_name, key_text) {
+        key_data.cb = function key_cb(state, key_name, key_text, scale, arg) {
             fn({
                 event: KEY_STATES[state[0]] || "unknown",
                 is_mouse: state[1] == "m",
                 canceled: state[2] == "c",
                 key_name: key_name || undefined,
-                key_text: key_text || undefined
+                key_text: key_text || undefined,
+                scale: scale ? parseFloat(scale) : 1.0,
+                arg: arg,
             });
         }
     } else {
@@ -331,8 +333,9 @@ function add_binding(forced, key, name, fn, opts) {
         }
     }
 
+    var prefix = key_data.scalable ? "" : " nonscalable";
     if (key)
-        key_data.input = key + " script-binding " + mp.script_name + "/" + name;
+        key_data.input = key + prefix + " script-binding " + mp.script_name + "/" + name;
     binds[name] = key_data;  // used by user and/or our (key) script-binding
     sched_bindings_flush();
 }
@@ -653,12 +656,12 @@ mp.options = { read_options: read_options };
 function register_event_handler(t) {
     mp.register_script_message("input-event", function (type, args) {
         if (t[type]) {
-            args = JSON.parse(args)
-            var result = t[type](args[0], args[1]);
+            args = args ? JSON.parse(args) : [];
+            var result = t[type].apply(null, args);
 
             if (type == "complete" && result) {
                 mp.commandv("script-message-to", "console", "complete",
-                            JSON.stringify(result[0]), result[1]);
+                            JSON.stringify(result[0]), result[1], result[2] || "");
             }
         }
 
@@ -669,6 +672,8 @@ function register_event_handler(t) {
 
 mp.input = {
     get: function(t) {
+        t.has_completions = t.complete !== undefined
+
         mp.commandv("script-message-to", "console", "get-input", mp.script_name,
                     JSON.stringify(t));
 

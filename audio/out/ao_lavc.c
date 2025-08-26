@@ -37,6 +37,7 @@
 #include "audio/fmt-conversion.h"
 #include "filters/filter_internal.h"
 #include "filters/f_utils.h"
+#include "misc/lavc_compat.h"
 #include "mpv_talloc.h"
 #include "ao.h"
 #include "internal.h"
@@ -65,9 +66,13 @@ static bool write_frame(struct ao *ao, struct mp_frame frame);
 
 static bool supports_format(const AVCodec *codec, int format)
 {
-    for (const enum AVSampleFormat *sampleformat = codec->sample_fmts;
-         sampleformat && *sampleformat != AV_SAMPLE_FMT_NONE;
-         sampleformat++)
+    const enum AVSampleFormat *sampleformat;
+    int ret = mp_avcodec_get_supported_config(NULL, codec,
+                                              AV_CODEC_CONFIG_SAMPLE_FORMAT,
+                                              (const void **)&sampleformat);
+    if (ret >= 0 && !sampleformat)
+        return true;
+    for (; ret >= 0 && *sampleformat != AV_SAMPLE_FMT_NONE; sampleformat++)
     {
         if (af_from_avformat(*sampleformat) == format)
             return true;
@@ -88,16 +93,6 @@ static void select_format(struct ao *ao, const AVCodec *codec)
     }
 }
 
-static void on_ready(void *ptr)
-{
-    struct ao *ao = ptr;
-    struct priv *ac = ao->priv;
-
-    ac->worst_time_base = encoder_get_mux_timebase_unlocked(ac->enc);
-
-    ao_add_events(ao, AO_EVENT_INITIAL_UNBLOCK);
-}
-
 // open & setup audio device
 static int init(struct ao *ao)
 {
@@ -111,8 +106,14 @@ static int init(struct ao *ao)
     AVCodecContext *encoder = ac->enc->encoder;
     const AVCodec *codec = encoder->codec;
 
-    int samplerate = af_select_best_samplerate(ao->samplerate,
-                                               codec->supported_samplerates);
+    const int *samplerates;
+    int ret = mp_avcodec_get_supported_config(NULL, codec,
+                                              AV_CODEC_CONFIG_SAMPLE_RATE,
+                                              (const void **)&samplerates);
+
+    int samplerate = 0;
+    if (ret >= 0)
+        samplerate = af_select_best_samplerate(ao->samplerate, samplerates);
     if (samplerate > 0)
         ao->samplerate = samplerate;
 
@@ -136,9 +137,10 @@ static int init(struct ao *ao)
     encoder->sample_fmt = af_to_avformat(ao->format);
     encoder->bits_per_raw_sample = ac->sample_size * 8;
 
-    if (!encoder_init_codec_and_muxer(ac->enc, on_ready, ao))
+    if (!encoder_init_codec_and_muxer(ac->enc))
         goto fail;
 
+    ac->worst_time_base = encoder_get_mux_timebase_unlocked(ac->enc);
     ac->pcmhack = 0;
     if (encoder->frame_size <= 1)
         ac->pcmhack = av_get_bits_per_sample(encoder->codec_id) / 8;
@@ -317,7 +319,6 @@ const struct ao_driver audio_out_lavc = {
     .encode = true,
     .description = "audio encoding using libavcodec",
     .name      = "lavc",
-    .initially_blocked = true,
     .write_frames = true,
     .priv_size = sizeof(struct priv),
     .init      = init,

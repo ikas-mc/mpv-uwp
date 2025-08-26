@@ -159,7 +159,7 @@ static struct ao *ao_alloc(bool probing, struct mpv_global *global,
                            void (*wakeup_cb)(void *ctx), void *wakeup_ctx,
                            char *name)
 {
-    assert(wakeup_cb);
+    mp_assert(wakeup_cb);
 
     struct mp_log *log = mp_log_new(NULL, global->log, "ao");
     struct m_obj_desc desc;
@@ -362,7 +362,7 @@ int ao_query_and_reset_events(struct ao *ao, int events)
 }
 
 // Returns events that were set by this calls.
-int ao_add_events(struct ao *ao, int events)
+static int ao_add_events(struct ao *ao, int events)
 {
     unsigned prev_events = atomic_fetch_or(&ao->events_, events);
     unsigned new = events & ~prev_events;

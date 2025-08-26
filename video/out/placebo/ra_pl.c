@@ -15,7 +15,7 @@ static inline pl_gpu get_gpu(const struct ra *ra)
     return p->gpu;
 }
 
-static struct ra_fns ra_fns_pl;
+static const struct ra_fns ra_fns_pl;
 
 pl_gpu ra_pl_get(const struct ra *ra)
 {
@@ -26,7 +26,7 @@ static pl_timer get_active_timer(const struct ra *ra);
 
 struct ra *ra_create_pl(pl_gpu gpu, struct mp_log *log)
 {
-    assert(gpu);
+    mp_assert(gpu);
 
     struct ra *ra = talloc_zero(NULL, struct ra);
     ra->log = log;
@@ -651,7 +651,7 @@ static pl_timer get_active_timer(const struct ra *ra)
     return t->timers[t->idx_timers++];
 }
 
-static struct ra_fns ra_fns_pl = {
+static const struct ra_fns ra_fns_pl = {
     .destroy                = destroy_ra_pl,
     .tex_create             = tex_create_pl,
     .tex_destroy            = tex_destroy_pl,
@@ -674,4 +674,3 @@ static struct ra_fns ra_fns_pl = {
     .timer_start            = timer_start_pl,
     .timer_stop             = timer_stop_pl,
 };
-

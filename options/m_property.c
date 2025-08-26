@@ -26,7 +26,7 @@
 
 #include <libavutil/common.h>
 
-#include "libmpv/client.h"
+#include "mpv/client.h"
 
 #include "mpv_talloc.h"
 #include "m_option.h"
@@ -46,7 +46,7 @@ static int m_property_multiply(struct mp_log *log,
                       &opt, ctx);
     if (r != M_PROPERTY_OK)
         return r;
-    assert(opt.type);
+    mp_assert(opt.type);
 
     if (!opt.type->multiply)
         return M_PROPERTY_NOT_IMPLEMENTED;
@@ -105,7 +105,7 @@ int m_property_do(struct mp_log *log, const struct m_property *prop_list,
     r = do_action(prop_list, name, M_PROPERTY_GET_TYPE, &opt, ctx);
     if (r <= 0)
         return r;
-    assert(opt.type);
+    mp_assert(opt.type);
 
     switch (action) {
     case M_PROPERTY_FIXED_LEN_PRINT:
@@ -147,7 +147,7 @@ int m_property_do(struct mp_log *log, const struct m_property *prop_list,
                           &opt, ctx);
         if (r <= 0)
             return r;
-        assert(opt.type);
+        mp_assert(opt.type);
         if (!opt.type->add)
             return M_PROPERTY_NOT_IMPLEMENTED;
         if ((r = do_action(prop_list, name, M_PROPERTY_GET, &val, ctx)) <= 0)
@@ -192,7 +192,7 @@ int m_property_do(struct mp_log *log, const struct m_property *prop_list,
         if ((r = do_action(prop_list, name, M_PROPERTY_SET_NODE, arg, ctx)) !=
             M_PROPERTY_NOT_IMPLEMENTED)
             return r;
-        int err = m_option_set_node_or_string(log, &opt, name, &val, arg);
+        int err = m_option_set_node_or_string(log, &opt, bstr0(name), &val, arg);
         if (err == M_OPT_UNKNOWN) {
             r = M_PROPERTY_NOT_IMPLEMENTED;
         } else if (err < 0) {
@@ -293,6 +293,9 @@ char *m_properties_expand_string(const struct m_property *prop_list,
     bool skip = false;
     int level = 0, skip_level = 0;
     bstr str = bstr0(str0);
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    int n = 0;
+#endif
 
     while (str.len) {
         if (level > 0 && bstr_eatstart0(&str, "}")) {
@@ -309,6 +312,11 @@ char *m_properties_expand_string(const struct m_property *prop_list,
             bstr name = bstr_splice(str, 0, term_pos < 0 ? str.len : term_pos);
             str = bstr_cut(str, term_pos);
             bool have_fallback = bstr_eatstart0(&str, ":");
+
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+            if (n++ > 10)
+                break;
+#endif
 
             if (!skip) {
                 skip = expand_property(prop_list, &ret, &ret_len, name,
@@ -609,19 +617,17 @@ int m_property_read_list(int action, void *arg, int count,
             return M_PROPERTY_NOT_IMPLEMENTED;
         }
         // This is expected of the form "123" or "123/rest"
-        char *next = strchr(ka->key, '/');
-        char *end = NULL;
-        const char *key_end = ka->key + strlen(ka->key);
+        char *end;
         long int item = strtol(ka->key, &end, 10);
         // not a number, trailing characters, etc.
-        if ((end != key_end || ka->key == key_end) && end != next)
+        if (end == ka->key || (end[0] == '/' && !end[1]))
             return M_PROPERTY_UNKNOWN;
         if (item < 0 || item >= count)
             return M_PROPERTY_UNKNOWN;
-        if (next) {
+        if (*end) {
             // Sub-path
             struct m_property_action_arg n_ka = *ka;
-            n_ka.key = next + 1;
+            n_ka.key = end + 1;
             return get_item(item, M_PROPERTY_KEY_ACTION, &n_ka, ctx);
         } else {
             // Direct query

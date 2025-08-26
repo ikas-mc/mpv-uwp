@@ -24,64 +24,42 @@
 #include "common/common.h"
 #include "timer.h"
 
-typedef struct {
-    char use_cs;
-    union {
-        CRITICAL_SECTION cs;
-        SRWLOCK srw;
-    };
-} mp_mutex;
-
 typedef CONDITION_VARIABLE mp_cond;
 typedef INIT_ONCE          mp_once;
+typedef SRWLOCK            mp_mutex;
 typedef mp_mutex           mp_static_mutex;
 typedef HANDLE             mp_thread;
 typedef DWORD              mp_thread_id;
 
 #define MP_STATIC_COND_INITIALIZER CONDITION_VARIABLE_INIT
-#define MP_STATIC_MUTEX_INITIALIZER { .srw = SRWLOCK_INIT }
+#define MP_STATIC_MUTEX_INITIALIZER SRWLOCK_INIT
 #define MP_STATIC_ONCE_INITIALIZER INIT_ONCE_STATIC_INIT
 
-static inline int mp_mutex_init_type_internal(mp_mutex *mutex, enum mp_mutex_type mtype)
+static inline int mp_mutex_init(mp_mutex *mutex)
 {
-    mutex->use_cs = mtype == MP_MUTEX_RECURSIVE;
-    if (mutex->use_cs)
-        return !InitializeCriticalSectionEx(&mutex->cs, 0, 0);
-    InitializeSRWLock(&mutex->srw);
+    InitializeSRWLock(mutex);
     return 0;
 }
 
 static inline int mp_mutex_destroy(mp_mutex *mutex)
 {
-    if (mutex->use_cs)
-        DeleteCriticalSection(&mutex->cs);
     return 0;
 }
 
 static inline int mp_mutex_lock(mp_mutex *mutex)
 {
-    if (mutex->use_cs) {
-        EnterCriticalSection(&mutex->cs);
-    } else {
-        AcquireSRWLockExclusive(&mutex->srw);
-    }
+    AcquireSRWLockExclusive(mutex);
     return 0;
 }
 
 static inline int mp_mutex_trylock(mp_mutex *mutex)
 {
-    if (mutex->use_cs)
-        return !TryEnterCriticalSection(&mutex->cs);
-    return !TryAcquireSRWLockExclusive(&mutex->srw);
+    return !TryAcquireSRWLockExclusive(mutex);
 }
 
 static inline int mp_mutex_unlock(mp_mutex *mutex)
 {
-    if (mutex->use_cs) {
-        LeaveCriticalSection(&mutex->cs);
-    } else {
-        ReleaseSRWLockExclusive(&mutex->srw);
-    }
+    ReleaseSRWLockExclusive(mutex);
     return 0;
 }
 
@@ -116,14 +94,8 @@ static inline int mp_cond_timedwait(mp_cond *cond, mp_mutex *mutex, int64_t time
 
     int ret = 0;
     int64_t hrt = mp_start_hires_timers(MP_TIME_MS_TO_NS(timeout));
-    BOOL bRet;
 
-    if (mutex->use_cs) {
-        bRet = SleepConditionVariableCS(cond, &mutex->cs, timeout);
-    } else {
-        bRet = SleepConditionVariableSRW(cond, &mutex->srw, timeout, 0);
-    }
-    if (bRet == FALSE)
+    if (!SleepConditionVariableSRW(cond, mutex, timeout, 0))
         ret = GetLastError() == ERROR_TIMEOUT ? ETIMEDOUT : EINVAL;
 
     mp_end_hires_timers(hrt);
@@ -169,8 +141,14 @@ static inline int mp_thread_create(mp_thread *thread,
 static inline int mp_thread_join(mp_thread thread)
 {
     DWORD ret = WaitForSingleObject(thread, INFINITE);
+#if HAVE_UWP
+    if (ret != 0x00000000L)
+        return ret == 0x00000080L ? EINVAL : EDEADLK;
+#else
     if (ret != WAIT_OBJECT_0)
         return ret == WAIT_ABANDONED ? EINVAL : EDEADLK;
+#endif   
+
     CloseHandle(thread);
     return 0;
 }
@@ -207,8 +185,4 @@ static inline void mp_thread_set_name(const char *name)
     talloc_free(wname);
 }
 
-static inline int64_t mp_thread_cpu_time_ns(mp_thread_id thread)
-{
-    (void) thread;
-    return 0;
-}
+int64_t mp_thread_cpu_time_ns(mp_thread_id thread_id);

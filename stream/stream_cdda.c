@@ -38,6 +38,7 @@
 #include "options/m_option.h"
 #include "options/m_config.h"
 #include "options/options.h"
+#include "options/path.h"
 
 #if !HAVE_GPL
 #error GPL only
@@ -75,8 +76,8 @@ const struct m_sub_options stream_cdda_conf = {
         {"overlap", OPT_INT(search_overlap), M_RANGE(0, 75)},
         {"toc-offset", OPT_INT(toc_offset)},
         {"skip", OPT_BOOL(skip)},
-        {"span-a", OPT_INT(span[0])},
-        {"span-b", OPT_INT(span[1])},
+        {"span-a", OPT_INT(span[0]), .deprecation_message = "--start=#N"},
+        {"span-b", OPT_INT(span[1]), .deprecation_message = "--end=#N"},
         {"cdtext", OPT_BOOL(cdtext)},
         {0}
     },
@@ -106,7 +107,7 @@ static void print_cdtext(stream_t *s, int track)
     cdtext_t *text = cdio_get_cdtext(p->cd->p_cdio);
     int header = 0;
     if (text) {
-        for (int i = 0; i < sizeof(cdtext_name) / sizeof(cdtext_name[0]); i++) {
+        for (int i = 0; i < MP_ARRAY_SIZE(cdtext_name); i++) {
             const char *name = cdtext_name[i];
             const char *value = cdtext_get_const(text, i, track);
             if (name && value) {
@@ -159,7 +160,7 @@ static int seek(stream_t *s, int64_t newpos)
     int seek_to_track = 0;
     int i;
 
-    newpos += p->start_sector * CDIO_CD_FRAMESIZE_RAW;
+    newpos += (int64_t)p->start_sector * CDIO_CD_FRAMESIZE_RAW;
 
     sec = newpos / CDIO_CD_FRAMESIZE_RAW;
     if (newpos < 0 || sec > p->end_sector) {
@@ -221,10 +222,12 @@ static int control(stream_t *stream, int cmd, void *arg)
         int track = *(double *)arg;
         int start_track = get_track_by_sector(p, p->start_sector);
         int end_track = get_track_by_sector(p, p->end_sector);
-        track += start_track;
-        if (track > end_track)
+        if (start_track == -1 || end_track == -1)
             return STREAM_ERROR;
-        int64_t sector = p->cd->disc_toc[track].dwStartSector;
+        track += start_track;
+        if (track < 0 || track > end_track)
+            return STREAM_ERROR;
+        int64_t sector = p->cd->disc_toc[track].dwStartSector - p->start_sector;
         int64_t pos = sector * CDIO_CD_FRAMESIZE_RAW;
         // Assume standard audio CD: 44.1khz, 2 channels, s16 samples
         *(double *)arg = pos / (44100.0 * 2 * 2);
@@ -237,7 +240,7 @@ static int control(stream_t *stream, int cmd, void *arg)
 static int64_t get_size(stream_t *st)
 {
     cdda_priv *p = st->priv;
-    return (p->end_sector + 1 - p->start_sector) * CDIO_CD_FRAMESIZE_RAW;
+    return (int64_t)(p->end_sector + 1 - p->start_sector) * CDIO_CD_FRAMESIZE_RAW;
 }
 
 static int open_cdda(stream_t *st)
@@ -251,11 +254,11 @@ static int open_cdda(stream_t *st)
     int last_track;
 
     if (st->path[0]) {
-        p->device = st->path;
+        p->device = talloc_strdup(priv, st->path);
     } else if (p->cdda_device && p->cdda_device[0]) {
-        p->device = p->cdda_device;
+        p->device = mp_get_user_path(priv, st->global, p->cdda_device);
     } else {
-        p->device = DEFAULT_CDROM_DEVICE;
+        p->device = talloc_strdup(priv, DEFAULT_OPTICAL_DEVICE);
     }
 
 #if defined(__NetBSD__)
@@ -311,7 +314,6 @@ static int open_cdda(stream_t *st)
     priv->cdp = paranoia_init(cdd);
     if (priv->cdp == NULL) {
         cdda_close(cdd);
-        free(priv);
         return STREAM_ERROR;
     }
 

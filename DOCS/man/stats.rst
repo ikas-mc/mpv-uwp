@@ -121,16 +121,22 @@ Configurable Options
     Whether to clip lines to the terminal width.
 
 ``plot_perfdata``
-    Default: yes
+    Default: no
 
     Show graphs for performance data (page 2).
 
 ``plot_vsync_ratio``
-    Default: yes
+    Default: no
+
 ``plot_vsync_jitter``
-    Default: yes
+    Default: no
 
     Show graphs for vsync and jitter values (page 1). Only when toggled.
+
+``plot_cache``
+    Default: yes
+
+    Show graphs for cache values (page 3). Only when toggled.
 
 ``plot_tonemapping_lut``
     Default: no
@@ -165,7 +171,7 @@ Configurable Options
     Color of the text.
 
 ``border_size``
-    Default: 2
+    Default: 1.65
 
     Size of border drawn around the font.
 
@@ -175,12 +181,12 @@ Configurable Options
     Color of the text border.
 
 ``shadow_x_offset``
-    Default: 0
+    Default: same as ``--osd-shadow-offset``
 
     The horizontal distance from the text to position the shadow at.
 
 ``shadow_y_offset``
-    Default: 0
+    Default: same as ``--osd-shadow-offset``
 
     The vertical distance from the text to position the shadow at.
 

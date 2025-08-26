@@ -67,9 +67,11 @@ static void wayland_egl_swap_buffers(struct ra_ctx *ctx)
     struct priv *p = ctx->priv;
     struct vo_wayland_state *wl = ctx->vo->wl;
 
+    vo_wayland_handle_color(wl);
+
     eglSwapBuffers(p->egl_display, p->egl_surface);
 
-    if (!wl->opts->wl_disable_vsync)
+    if (wl->opts->wl_internal_vsync)
         vo_wayland_wait_frame(wl);
 
     if (wl->use_present)
@@ -104,7 +106,7 @@ static bool egl_create_context(struct ra_ctx *ctx)
 
     mpegl_load_functions(&p->gl, wl->log);
 
-    struct ra_gl_ctx_params params = {
+    struct ra_ctx_params params = {
         .check_visible      = wayland_egl_check_visible,
         .swap_buffers       = wayland_egl_swap_buffers,
         .get_vsync          = wayland_egl_get_vsync,

@@ -23,10 +23,12 @@
 #include "input/event.h"
 #include "video/mp_image.h"
 #include "vo.h"
+#include "xdg-activation-v1.h"
 
 struct compositor_format;
 struct vo_wayland_seat;
 struct vo_wayland_tranche;
+struct vo_wayland_data_offer;
 
 struct drm_format {
     uint32_t format;
@@ -88,10 +90,10 @@ struct vo_wayland_state {
     int wakeup_pipe[2];
 
     /* color-management */
-    struct xx_color_manager_v4 *color_manager;
-    struct xx_color_management_surface_v4 *color_surface;
-    struct xx_image_description_v4 *image_description;
-    struct xx_image_description_creator_params_v4 *image_creator_params;
+    struct wp_color_manager_v1 *color_manager;
+    struct wp_color_management_surface_v1 *color_surface;
+    struct wp_color_management_surface_feedback_v1 *color_surface_feedback;
+    struct wp_image_description_creator_icc_v1 *icc_creator;
     struct mp_image_params target_params;
     bool supports_icc;
     bool supports_parametric;
@@ -99,9 +101,18 @@ struct vo_wayland_state {
     bool supports_tf_power;
     bool supports_luminances;
     bool supports_display_primaries;
-    bool unsupported_colorspace;
     int primaries_map[PL_COLOR_PRIM_COUNT];
     int transfer_map[PL_COLOR_TRC_COUNT];
+    void *icc_file;
+    uint32_t icc_size;
+    struct pl_color_space preferred_csp;
+
+    /* color-representation */
+    struct wp_color_representation_manager_v1 *color_representation_manager;
+    struct wp_color_representation_surface_v1 *color_representation_surface;
+    int alpha_map[PL_ALPHA_MODE_COUNT];
+    int coefficients_map[PL_COLOR_SYSTEM_COUNT];
+    int range_map[PL_COLOR_SYSTEM_COUNT * 2];
 
     /* content-type */
     struct wp_content_type_manager_v1 *content_type_manager;
@@ -109,8 +120,10 @@ struct vo_wayland_state {
     int current_content_type;
 
     /* cursor-shape */
-    /* TODO: unvoid these if required wayland protocols is bumped to 1.32+ */
-    void *cursor_shape_manager;
+    struct wp_cursor_shape_manager_v1 *cursor_shape_manager;
+
+    /* fifo */
+    bool has_fifo;
 
     /* fractional-scale */
     struct wp_fractional_scale_manager_v1 *fractional_scale_manager;
@@ -119,6 +132,9 @@ struct vo_wayland_state {
     /* idle-inhibit */
     struct zwp_idle_inhibit_manager_v1 *idle_inhibit_manager;
     struct zwp_idle_inhibitor_v1 *idle_inhibitor;
+
+    /* text-input */
+    struct zwp_text_input_manager_v3 *text_input_manager;
 
     /* linux-dmabuf */
     struct wl_list tranche_list;
@@ -134,10 +150,15 @@ struct vo_wayland_state {
     struct mp_present *present;
     int64_t refresh_interval;
     bool present_clock;
+    bool present_v2;
     bool use_present;
+    int last_zero_copy;
 
     /* single-pixel-buffer */
     struct wp_single_pixel_buffer_manager_v1 *single_pixel_manager;
+
+    /* xdg-activation */
+    struct xdg_activation_v1 *xdg_activation;
 
     /* xdg-decoration */
     struct zxdg_decoration_manager_v1 *xdg_decoration_manager;
@@ -159,14 +180,11 @@ struct vo_wayland_state {
     /* Input */
     struct wl_list seat_list;
     struct xkb_context *xkb_context;
+    struct zwp_tablet_manager_v2 *wp_tablet_manager;
 
-    /* DND */
-    struct wl_data_device_manager *dnd_devman;
-    struct wl_data_offer *dnd_offer;
-    int dnd_action; // actually enum mp_dnd_action
-    char *dnd_mime_type;
-    int dnd_fd;
-    int dnd_mime_score;
+    /* Data offer */
+    struct wl_data_device_manager *devman;
+    bstr selection_text;
 
     /* Cursor */
     struct wl_cursor_theme *cursor_theme;
@@ -178,6 +196,7 @@ struct vo_wayland_state {
 };
 
 bool vo_wayland_check_visible(struct vo *vo);
+struct pl_color_space vo_wayland_preferred_csp(struct vo *vo);
 bool vo_wayland_valid_format(struct vo_wayland_state *wl, uint32_t drm_format, uint64_t modifier);
 bool vo_wayland_init(struct vo *vo);
 bool vo_wayland_reconfig(struct vo *vo);

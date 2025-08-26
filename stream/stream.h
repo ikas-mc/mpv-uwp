@@ -67,6 +67,9 @@
 #define STREAM_ERROR 0
 #define STREAM_OK    1
 
+// EOF value returned by stream_read_char()
+#define STREAM_EOF (-256)
+
 enum stream_ctrl {
     // Certain network protocols
     STREAM_CTRL_AVSEEK,
@@ -86,7 +89,8 @@ enum stream_ctrl {
     STREAM_CTRL_GET_ANGLE,
     STREAM_CTRL_SET_ANGLE,
     STREAM_CTRL_GET_NUM_TITLES,
-    STREAM_CTRL_GET_TITLE_LENGTH,       // double* (in: title number, out: len)
+    STREAM_CTRL_GET_TITLE_LENGTH,    // double* (in: title number, out: len)
+    STREAM_CTRL_GET_TITLE_PLAYLIST,  // double* (in: title number, out: playlist)
     STREAM_CTRL_GET_LANG,
     STREAM_CTRL_GET_CURRENT_TITLE,
     STREAM_CTRL_SET_CURRENT_TITLE,
@@ -256,6 +260,7 @@ struct stream *stream_create(const char *url, int flags,
 stream_t *open_output_stream(const char *filename, struct mpv_global *global);
 
 void mp_url_unescape_inplace(char *buf);
+char *mp_url_unescape(void *talloc_ctx, char *url);
 char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok);
 
 // stream_memory.c
@@ -277,7 +282,7 @@ void mp_setup_av_network_options(struct AVDictionary **dict,
                                  struct mp_log *log);
 
 void stream_print_proto_list(struct mp_log *log);
-char **stream_get_proto_list(void);
+char **stream_get_proto_list(bool safe_only);
 bool stream_has_proto(const char *proto);
 
 #endif /* MPLAYER_STREAM_H */

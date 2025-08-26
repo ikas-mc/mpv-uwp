@@ -510,10 +510,11 @@ static int pipewire_init_boilerplate(struct ao *ao)
     if (pw_thread_loop_start(p->loop) < 0)
         goto error;
 
-    context = pw_context_new(
-            pw_thread_loop_get_loop(p->loop),
-            pw_properties_new(PW_KEY_CONFIG_NAME, "client-rt.conf", NULL),
-            0);
+    struct pw_properties *props = NULL;
+#if !PW_CHECK_VERSION(1, 3, 81)
+    props = pw_properties_new(PW_KEY_CONFIG_NAME, "client-rt.conf", NULL);
+#endif
+    context = pw_context_new(pw_thread_loop_get_loop(p->loop), props, 0);
     if (!context)
         goto error;
 
@@ -883,7 +884,7 @@ static void hotplug_uninit(struct ao *ao)
 
 static void list_devs(struct ao *ao, struct ao_device_list *list)
 {
-    ao_device_list_add(list, ao, &(struct ao_device_desc){});
+    ao_device_list_add(list, ao, &(struct ao_device_desc){0});
 
     if (for_each_sink(ao, add_device_to_list, list) < 0)
         MP_WARN(ao, "Could not list devices, list may be incomplete\n");

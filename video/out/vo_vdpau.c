@@ -602,7 +602,7 @@ static void generate_osd_part(struct vo *vo, struct sub_bitmaps *imgs)
         MP_ASSERT_UNREACHABLE();
     };
 
-    assert(imgs->packed);
+    mp_assert(imgs->packed);
 
     int r_w = next_pow2(imgs->packed_w);
     int r_h = next_pow2(imgs->packed_h);
@@ -870,7 +870,7 @@ drop:
     vo_increment_drop_count(vo, 1);
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct vdpctx *vc = vo->priv;
 
@@ -893,6 +893,7 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
         video_to_output_surface(vo, vc->current_image);
         draw_osd(vo);
     }
+    return VO_TRUE;
 }
 
 // warning: the size and pixel format of surface must match that of the
@@ -912,7 +913,7 @@ static struct mp_image *read_output_surface(struct vo *vo,
     if (vdp_st != VDP_STATUS_OK)
         return NULL;
 
-    assert(fmt == OUTPUT_RGBA_FORMAT);
+    mp_assert(fmt == OUTPUT_RGBA_FORMAT);
 
     struct mp_image *image = mp_image_alloc(IMGFMT_BGR0, w, h);
     if (!image)
@@ -1033,7 +1034,7 @@ static int preinit(struct vo *vo)
 
     if (mp_vdpau_guess_if_emulated(vc->mpvdp)) {
         MP_WARN(vo, "VDPAU is most likely emulated via VA-API.\n"
-                    "This is inefficient. Use --vo=gpu instead.\n");
+                    "This is inefficient. Use VA-API directly instead.\n");
     }
 
     // Mark everything as invalid first so uninit() can tell what has been
@@ -1050,7 +1051,7 @@ static int preinit(struct vo *vo)
 
     MP_WARN(vo, "Warning: this compatibility VO is low quality and may "
                 "have issues with OSD, scaling, screenshots and more.\n"
-                "vo=gpu is the preferred choice in any case and "
+                "vo=gpu-next is the preferred choice in any case and "
                 "includes VDPAU support via hwdec=vdpau or vdpau-copy.\n");
 
     return 0;
