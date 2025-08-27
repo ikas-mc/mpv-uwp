@@ -16,7 +16,6 @@
  */
 
 #pragma once
-
 #include <errno.h>
 #include <process.h>
 #include <windows.h>
@@ -141,14 +140,8 @@ static inline int mp_thread_create(mp_thread *thread,
 static inline int mp_thread_join(mp_thread thread)
 {
     DWORD ret = WaitForSingleObject(thread, INFINITE);
-#if HAVE_UWP
-    //https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject
-    if (ret != 0x00000000L)
-        return ret == 0x00000080L ? EINVAL : EDEADLK;
-#else
     if (ret != WAIT_OBJECT_0)
         return ret == WAIT_ABANDONED ? EINVAL : EDEADLK;
-#endif   
 
     CloseHandle(thread);
     return 0;

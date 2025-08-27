@@ -17,7 +17,9 @@
 
 #include <windows.h>
 #include <winternl.h>
+#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP)
 #include <ntstatus.h>
+#endif
 #include <mmsystem.h>
 #include <stdlib.h>
 #include <versionhelpers.h>
@@ -26,10 +28,10 @@
 
 #include "threads.h"
 #include "timer.h"
-
 #include "config.h"
 
 static LARGE_INTEGER perf_freq;
+//TODO 
 #if !HAVE_UWP
 static int64_t hires_max = MP_TIME_MS_TO_NS(50);
 static int64_t hires_res = MP_TIME_MS_TO_NS(1);
@@ -88,13 +90,8 @@ void mp_sleep_ns(int64_t ns)
     if (!SetWaitableTimer(timer, &time, 0, NULL, NULL, 0))
         goto end;
 
-#if HAVE_UWP
-    if (WaitForSingleObject (timer, INFINITE) != 0x00000000L)
+    if (WaitForSingleObject (timer, INFINITE) != WAIT_OBJECT_0)
         goto end;
-#else
-    if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0)
-        goto end;
-#endif
 
 end:
     if (timer)
