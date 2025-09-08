@@ -206,12 +206,15 @@ static struct pl_color_space d3d11_target_color_space(struct ra_swapchain *sw)
 {
     struct priv *p = sw->priv;
     DXGI_OUTPUT_DESC1 desc;
-#if !HAVE_UWP    
-    if (mp_dxgi_output_desc_from_hwnd(&p->dxgi_ctx, vo_w32_hwnd(sw->ctx->vo), &desc))
-        return mp_dxgi_desc_to_color_space(&desc);
-#else
-    if (mp_dxgi_output_desc_from_swapchain(NULL, &p->swapchain,  &desc))
-        return mp_dxgi_desc_to_color_space(&desc);
+    if (sw->ctx->opts.composition) {
+        if (mp_dxgi_output_desc_from_swapchain (&p->dxgi_ctx, p->swapchain, &desc))
+            return mp_dxgi_desc_to_color_space (&desc);
+    }
+#if !HAVE_UWP
+    else {
+        if (mp_dxgi_output_desc_from_hwnd (&p->dxgi_ctx, vo_w32_hwnd (sw->ctx->vo), &desc))
+            return mp_dxgi_desc_to_color_space (&desc);
+    }
 #endif
     return (struct pl_color_space){0};
 }

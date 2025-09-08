@@ -1072,43 +1072,28 @@ done:
     return result;
 }
 
-#else
-//TODO
-static bool mp_get_dxgi_output_desc(IDXGISwapChain *swapchain, DXGI_OUTPUT_DESC1 *desc)
-{
-    bool ret = false;
-    IDXGIOutput *output = NULL;
-    IDXGIOutput6 *output6 = NULL;
-
-    if (FAILED(IDXGISwapChain_GetContainingOutput(swapchain, &output)))
-        goto done;
-
-    if (FAILED(IDXGIOutput_QueryInterface(output, &IID_IDXGIOutput6, (void**)&output6)))
-        goto done;
-
-    ret = SUCCEEDED(IDXGIOutput6_GetDesc1(output6, desc));
-
-done:
-    SAFE_RELEASE(output);
-    SAFE_RELEASE(output6);
-    return ret;
-}
 #endif
 
 bool mp_dxgi_output_desc_from_swapchain(struct mp_dxgi_factory_ctx *ctx,
                                         IDXGISwapChain *swapchain,
                                         DXGI_OUTPUT_DESC1 *desc)
 {
-#if !HAVE_UWP
-    DXGI_SWAP_CHAIN_DESC swap_desc;
     // IDXGISwapChain::GetContainingOutput is not used because DXGI cache the
     // output params and doesn't react to the changes. Instead go through the
     // HWND and create a fresh DXGI factory.
-    if (SUCCEEDED(IDXGISwapChain_GetDesc(swapchain, &swap_desc)))
-        return mp_dxgi_output_desc_from_hwnd(ctx, swap_desc.OutputWindow, desc);
+    DXGI_SWAP_CHAIN_DESC swap_desc;
+    if (SUCCEEDED (IDXGISwapChain_GetDesc (swapchain, &swap_desc))) {
+#if !HAVE_UWP
+        if (swap_desc.OutputWindow) {
+            return mp_dxgi_output_desc_from_hwnd (ctx, swap_desc.OutputWindow, desc);
+        } else {
+            //TODO 
+            return false;
+        }
 #else
-    return mp_get_dxgi_output_desc(swapchain, desc);
+        //TODO 
 #endif
+    }
     return false;
 }
 
