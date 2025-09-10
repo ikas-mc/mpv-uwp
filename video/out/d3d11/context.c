@@ -145,6 +145,23 @@ done:
     return tex;
 }
 
+static bool vo_composition_size(struct ra_ctx *ctx, int *out_w, int *out_h)
+{
+    int w = ctx->vo->opts->d3d11_composition_size.w;
+    int h = ctx->vo->opts->d3d11_composition_size.h;
+
+    if (w <= 0 || h <= 0) {
+        MP_ERR(ctx, "Failed to get height and width, check option d3d11-composition-size.\n");
+        return false;
+    }
+
+    *out_w = w;
+    *out_h = h;
+
+    return true;
+}
+
+
 static bool resize(struct ra_ctx *ctx)
 {
     struct priv *p = ctx->priv;
@@ -167,10 +184,15 @@ static bool resize(struct ra_ctx *ctx)
 
 static bool d3d11_reconfig(struct ra_ctx *ctx)
 {
+    if (ctx->opts.composition) {
+        if(!vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight))
+            return false;
+    } else {
 #if !HAVE_UWP
-    if (!ctx->opts.composition)
-        vo_w32_config(ctx->vo);
+        vo_w32_config (ctx->vo);
 #endif
+    }
+
     return resize(ctx);
 }
 
@@ -538,16 +560,20 @@ static bool d3d11_init(struct ra_ctx *ctx)
         goto error;
 
     ctx->opts.composition = p->opts->output_mode == 1;
+
+    if (ctx->opts.composition) {
+        if(!vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight))
+            return false;
+    } else {
 #if !HAVE_UWP
-    if (!ctx->opts.composition && !vo_w32_init(ctx->vo))
-        goto error;
-  
-    if (!ctx->opts.composition && ctx->opts.want_alpha)
-        vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
-#else
-    if (!ctx->opts.composition)
-        goto error;
+        if (!vo_w32_init(ctx->vo))
+            goto error;
+
+        if (ctx->opts.want_alpha) {
+            vo_w32_set_transparency (ctx->vo, ctx->opts.want_alpha);
+        }
 #endif
+    }
 
     UINT usage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
     if (ID3D11Device_GetFeatureLevel(p->device) >= D3D_FEATURE_LEVEL_11_0 &&
