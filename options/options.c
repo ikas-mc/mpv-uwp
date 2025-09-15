@@ -107,6 +107,8 @@ extern const struct m_sub_options egl_conf;
 
 extern const struct m_sub_options mp_sub_filter_opts;
 
+extern const struct m_sub_options w32_register_conf;
+
 static const struct m_sub_options screenshot_conf = {
     .opts = image_writer_opts,
     .size = sizeof(struct image_writer_opts),
@@ -525,6 +527,7 @@ static const m_option_t mp_opts[] = {
     {"msg-module", OPT_BOOL(msg_module), .flags = UPDATE_TERM},
     {"msg-time", OPT_BOOL(msg_time), .flags = UPDATE_TERM},
 #if HAVE_WIN32_DESKTOP
+    {"", OPT_SUBSTRUCT(w32_register_opts, w32_register_conf)},
     {"priority", OPT_CHOICE(w32_priority,
         {"no",          0},
         {"realtime",    REALTIME_PRIORITY_CLASS},
@@ -568,6 +571,7 @@ static const m_option_t mp_opts[] = {
     {"load-select", OPT_BOOL(lua_load_select), .flags = UPDATE_BUILTIN_SCRIPTS},
     {"load-positioning", OPT_BOOL(lua_load_positioning), .flags = UPDATE_BUILTIN_SCRIPTS},
     {"load-commands", OPT_BOOL(lua_load_commands), .flags = UPDATE_BUILTIN_SCRIPTS},
+    {"load-context-menu", OPT_BOOL(lua_load_context_menu), .flags = UPDATE_BUILTIN_SCRIPTS},
 #endif
 
 // ------------------------- stream options --------------------
@@ -1003,6 +1007,9 @@ static const struct MPOpts mp_default_opts = {
     .lua_load_select = true,
     .lua_load_positioning = true,
     .lua_load_commands = true,
+#ifndef _WIN32
+    .lua_load_context_menu = true,
+#endif
 #endif
     .auto_load_scripts = true,
     .loop_times = 1,
