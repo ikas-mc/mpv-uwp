@@ -1081,22 +1081,16 @@ bool mp_dxgi_output_desc_from_swapchain(struct mp_dxgi_factory_ctx *ctx,
     // IDXGISwapChain::GetContainingOutput is not used because DXGI cache the
     // output params and doesn't react to the changes. Instead go through the
     // HWND and create a fresh DXGI factory.
-    DXGI_SWAP_CHAIN_DESC swap_desc;
-    if (SUCCEEDED (IDXGISwapChain_GetDesc (swapchain, &swap_desc))) {
+    
 #if !HAVE_UWP
-        if (swap_desc.OutputWindow) {
-            return mp_dxgi_output_desc_from_hwnd (ctx, swap_desc.OutputWindow, desc);
-        } else {
-            //TODO 
-            return false;
-        }
-#else
-        //TODO 
-#endif
+    DXGI_SWAP_CHAIN_DESC swap_desc;
+    if (SUCCEEDED(IDXGISwapChain_GetDesc(swapchain, &swap_desc))) {
+        return mp_dxgi_output_desc_from_hwnd(ctx, swap_desc.OutputWindow, desc);
     }
+#endif
+
     return false;
 }
-
 
 
 struct pl_color_space mp_dxgi_desc_to_color_space(const DXGI_OUTPUT_DESC1 *desc)
