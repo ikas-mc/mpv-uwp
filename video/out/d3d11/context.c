@@ -184,14 +184,17 @@ static bool resize(struct ra_ctx *ctx)
 
 static bool d3d11_reconfig(struct ra_ctx *ctx)
 {
+
+#if HAVE_UWP
+	if (ctx->opts.composition)
+        vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight);
+#else     
     if (ctx->opts.composition) {
-        if(!vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight))
-            return false;
+        vo_w32_composition_size(ctx->vo);
     } else {
-#if !HAVE_UWP
-        vo_w32_config (ctx->vo);
-#endif
+        vo_w32_config(ctx->vo);
     }
+#endif
 
     return resize(ctx);
 }
@@ -559,20 +562,19 @@ static bool d3d11_init(struct ra_ctx *ctx)
         goto error;
 
     ctx->opts.composition = p->opts->output_mode == 1;
+#if HAVE_UWP
+    if (ctx->opts.composition && !vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight))
+        goto error;
+#else
+    if (!ctx->opts.composition && !vo_w32_init(ctx->vo))
+        goto error;
 
-    if (ctx->opts.composition) {
-        if(!vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight))
-            return false;
-    } else {
-#if !HAVE_UWP
-        if (!vo_w32_init(ctx->vo))
-            goto error;
+    if (ctx->opts.composition && !vo_w32_composition_size(ctx->vo))
+        goto error;
 
-        if (ctx->opts.want_alpha) {
-            vo_w32_set_transparency (ctx->vo, ctx->opts.want_alpha);
-        }
+    if (!ctx->opts.composition && ctx->opts.want_alpha)
+        vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
 #endif
-    }
 
     UINT usage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
     if (ID3D11Device_GetFeatureLevel(p->device) >= D3D_FEATURE_LEVEL_11_0 &&
