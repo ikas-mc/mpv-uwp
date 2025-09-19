@@ -145,7 +145,8 @@ done:
     return tex;
 }
 
-static bool vo_composition_size(struct ra_ctx *ctx, int *out_w, int *out_h)
+#if HAVE_UWP
+static bool update_composition_size(struct ra_ctx *ctx)
 {
     int w = ctx->vo->opts->d3d11_composition_size.w;
     int h = ctx->vo->opts->d3d11_composition_size.h;
@@ -155,12 +156,12 @@ static bool vo_composition_size(struct ra_ctx *ctx, int *out_w, int *out_h)
         return false;
     }
 
-    *out_w = w;
-    *out_h = h;
+    ctx->vo->dwidth = w;
+    ctx->vo->dheight = h;
 
     return true;
 }
-
+#endif
 
 static bool resize(struct ra_ctx *ctx)
 {
@@ -184,10 +185,9 @@ static bool resize(struct ra_ctx *ctx)
 
 static bool d3d11_reconfig(struct ra_ctx *ctx)
 {
-
 #if HAVE_UWP
 	if (ctx->opts.composition)
-        vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight);
+        update_composition_size(ctx);
 #else     
     if (ctx->opts.composition) {
         vo_w32_composition_size(ctx->vo);
@@ -563,7 +563,7 @@ static bool d3d11_init(struct ra_ctx *ctx)
 
     ctx->opts.composition = p->opts->output_mode == 1;
 #if HAVE_UWP
-    if (ctx->opts.composition && !vo_composition_size(ctx, &ctx->vo->dwidth, &ctx->vo->dheight))
+    if (ctx->opts.composition && !update_composition_size(ctx))
         goto error;
 #else
     if (!ctx->opts.composition && !vo_w32_init(ctx->vo))
