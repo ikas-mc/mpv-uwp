@@ -1,25 +1,27 @@
-#include <assert.h>
-#include <limits.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include "config.h"
+#include "misc/mp_assert.h"
+#include "mpv/client.h"
+#include "mpv/render.h"
+#include "options/m_config_core.h"
+#include "osdep/threads-posix.h"
+#include "ta/ta_talloc.h"
+#include "video/img_format.h"
 
-#include "mpv_talloc.h"
 #include "common/common.h"
-#include "misc/bstr.h"
 #include "misc/dispatch.h"
 #include "common/msg.h"
-#include "options/m_config.h"
 #include "options/options.h"
 #include "aspect.h"
 #include "dr_helper.h"
 #include "vo.h"
 #include "video/mp_image.h"
 #include "sub/osd.h"
-#include "osdep/threads.h"
 #include "osdep/timer.h"
 
 #include "common/global.h"

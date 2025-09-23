@@ -1,12 +1,19 @@
-#include <libplacebo/renderer.h>
-#include <libplacebo/utils/upload.h>
-#include "common/common.h"
-#include "common/msg.h"
-#include "video/mp_image.h"
 #include "video/out/gpu_next/ra.h"
-#include "video/out/vo.h"
-
-#include "ra.h"
+#include <libplacebo/renderer.h>           // for pl_frame, pl_plane, pl_ren...
+#include <libplacebo/utils/upload.h>       // for pl_plane_data, pl_upload_p...
+#include <stdint.h>                        // for uint64_t
+#include <stdlib.h>                        // for NULL, abs
+#include <string.h>                        // for memset
+#include "common/common.h"                 // for MPSWAP, MPMAX
+#include "common/msg.h"                    // for mp_msg, MSGL_DEBUG, MSGL_ERR
+#include "libplacebo/colorspace.h"         // for pl_bit_encoding, pl_bit_en...
+#include "libplacebo/gpu.h"                // for pl_tex, pl_fmt_type, pl_fi...
+#include "libplacebo/log.h"                // for pl_log
+#include "libplacebo/utils/frame_queue.h"  // for pl_queue_create, pl_queue_...
+#include "ta/ta_talloc.h"                  // for talloc_free, talloc_zero
+#include "video/img_format.h"              // for mp_imgfmt_comp_desc, mp_im...
+#include "video/mp_image.h"                // for mp_image, mp_image_params
+#include "video/out/vo.h"                  // for vo
 
 /**
  * @brief Private state for the libplacebo rendering abstraction.
@@ -26,6 +33,81 @@ struct ra_priv {
     pl_tex overlay_tex;     // A texture for overlays.
     pl_log pl_log;          // The libplacebo logging context.
 };
+
+/* --- New Abstraction Implementations --- */
+
+ra_queue ra_next_queue_create(struct ra_next *ra)
+{
+    return pl_queue_create(ra->gpu);
+}
+
+void ra_next_queue_destroy(ra_queue *queue)
+{
+    pl_queue_destroy(queue);
+}
+
+void ra_next_queue_push(ra_queue queue, const struct pl_source_frame *frame)
+{
+    pl_queue_push(queue, frame);
+}
+
+void ra_next_queue_update(ra_queue queue, struct pl_frame_mix *mix, const struct pl_queue_params *params)
+{
+    pl_queue_update(queue, mix, params);
+}
+
+void ra_next_queue_reset(ra_queue queue)
+{
+    pl_queue_reset(queue);
+}
+
+pl_tex ra_next_tex_create(struct ra_next *ra, const struct pl_tex_params *params)
+{
+    return pl_tex_create(ra->gpu, params);
+}
+
+void ra_next_tex_destroy(struct ra_next *ra, pl_tex *tex)
+{
+    pl_tex_destroy(ra->gpu, tex);
+}
+
+bool ra_next_tex_recreate(struct ra_next *ra, pl_tex *tex, const struct pl_tex_params *params)
+{
+    return pl_tex_recreate(ra->gpu, tex, params);
+}
+
+bool ra_next_tex_upload(struct ra_next *ra, const struct pl_tex_transfer_params *params)
+{
+    return pl_tex_upload(ra->gpu, params);
+}
+
+bool ra_next_tex_download(struct ra_next *ra, const struct pl_tex_transfer_params *params)
+{
+    return pl_tex_download(ra->gpu, params);
+}
+
+bool ra_next_render_image_mix(struct ra_next *ra, const struct pl_frame_mix *mix,
+                         struct pl_frame *target, const struct pl_render_params *params)
+{
+    struct ra_priv *p = (struct ra_priv *)ra;
+    if (!p->renderer) return false;
+    return pl_render_image_mix(p->renderer, mix, target, params);
+}
+
+bool ra_next_render_image(struct ra_next *ra, const struct pl_frame *src,
+                     struct pl_frame *target, const struct pl_render_params *params)
+{
+    struct ra_priv *p = (struct ra_priv *)ra;
+    if (!p->renderer) return false;
+    return pl_render_image(p->renderer, src, target, params);
+}
+
+pl_fmt ra_next_find_fmt(struct ra_next *ra, enum pl_fmt_type type, int num_comps,
+                   int comp_bits, int alpha_bits, unsigned caps)
+{
+    return pl_find_fmt(ra->gpu, type, num_comps, comp_bits, alpha_bits, caps);
+}
+
 
 /**
  * @brief Public wrapper to upload an mpv image to a libplacebo frame.
@@ -108,7 +190,7 @@ void ra_pl_cleanup_frame(struct ra_next *ra, struct pl_frame *frame)
         return;
     // Iterate over each plane and destroy its associated texture.
     for (int i = 0; i < frame->num_planes; i++)
-        pl_tex_destroy(ra->gpu, &frame->planes[i].texture);
+        ra_next_tex_destroy(ra, &frame->planes[i].texture);
 }
 
 /**
@@ -282,21 +364,6 @@ void ra_pl_destroy(struct ra_next **rap)
 
     // Correctly dereference the double pointer to get the struct pointer.
     struct ra_priv *p = (struct ra_priv *)*rap;
-
-    // Destroy our overlay texture if present
-    if (p->overlay_tex) {
-        mp_msg(p->pub.log, MSGL_DEBUG, "ra_pl_destroy: destroying overlay tex %p\n",
-               (void*)p->overlay_tex);
-        pl_tex_destroy(p->pub.gpu, &p->overlay_tex);
-    }
-
-    // Destroy any pool textures allocated in sub_tex[]
-    for (int i = 0; i < p->num_sub_tex; i++) {
-        if (p->sub_tex && p->sub_tex[i]) {
-            pl_tex_destroy(p->pub.gpu, &p->sub_tex[i]);
-        }
-    }
-    talloc_free(p->sub_tex);
 
     // Destroy the renderer (if any)
     if (p->renderer) {

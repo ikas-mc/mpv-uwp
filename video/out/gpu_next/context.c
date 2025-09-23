@@ -30,11 +30,18 @@
 
 #include "context.h"
 #include "config.h"
-#include "common/common.h"
 #include "common/msg.h"
-#include "options/m_config.h"
 #include "video/out/placebo/utils.h"
-#include "video/out/gpu/video.h"
+#include <stddef.h>
+#include "mpv/client.h"
+#include "mpv/render.h"
+#include "options/options.h"
+#include "ta/ta_talloc.h"
+#include "video/out/gpu/context.h"
+#include "video/out/libmpv.h"
+#include "video/out/opengl/common.h"
+#include "video/out/vo.h"
+#include "video/out/vulkan/common.h"
 
 #if HAVE_D3D11
 #include "osdep/windows_utils.h"
@@ -43,7 +50,6 @@
 #endif
 
 #if HAVE_GL
-#include "video/out/opengl/context.h"
 #include "video/out/opengl/ra_gl.h"
 # if HAVE_EGL
 #include <EGL/egl.h>

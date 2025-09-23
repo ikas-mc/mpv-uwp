@@ -1,20 +1,17 @@
 #pragma once
 
-#include <libplacebo/gpu.h>
-#include "video/out/vo.h"
-#include "video/mp_image.h"
+#include "stdbool.h"         // for bool
+#include <libplacebo/gpu.h>  // for pl_gpu, pl_tex
 
-// struct ra;
-// struct mpv_global;
-// struct mp_log;
-// struct osd_state;
-// struct mp_rect;
-// struct mp_image_params;
-
-/**
- * An opaque handle to our synchronous, libplacebo-based rendering engine.
- */
-// struct pl_video;
+// Forward declarations
+struct mp_image_params;
+struct mp_log;
+struct mp_osd_res;
+struct mp_rect;
+struct mpv_global;
+struct osd_state;
+struct ra_next;
+struct vo_frame;
 
 /**
  * Initializes the rendering engine.
@@ -64,5 +61,3 @@ void pl_video_reset(struct pl_video *p);
  * Asks the engine if a specific image format is supported.
  */
 bool pl_video_check_format(struct pl_video *p, int imgfmt);
-
-

@@ -1,13 +1,26 @@
-#include "common/common.h"
-#include "common/msg.h"
-#include "video/hwdec.h"
-#include "video/out/vo.h"
-#include "video/out/gpu_next/ra.h"
-#include "options/m_config.h"
-#include "video.h"
 #include "libmpv_gpu_next.h"
-#include "ra.h"
-#include "mpv/render.h"
+#include <stddef.h>             // for NULL
+#include "common/msg.h"         // for mp_log_new, MP_ERR
+#include "config.h"             // for HAVE_GL
+#include "libplacebo/config.h"  // for PL_HAVE_OPENGL
+#include "libplacebo/gpu.h"     // for pl_tex, pl_tex_params, pl_tex_t
+#include "mpv/client.h"         // for mpv_error
+#include "mpv/render.h"         // for mpv_render_param, mpv_render_param_type
+#include "ra.h"                 // for ra_next_tex_destroy
+#include "stdbool.h"            // for bool, false
+#include "string.h"             // for strcmp
+#include "ta/ta_talloc.h"       // for talloc_free, talloc_zero
+#include "video.h"              // for pl_video_check_format, pl_video_init
+#include "video/hwdec.h"        // for hwdec_devices_create, hwdec_devices_d...
+#include "video/out/libmpv.h"   // for render_backend, get_mpv_render_param
+#include "video/out/vo.h"       // for vo_frame (ptr only), voctrl_screenshot
+
+/*
+ * Structure for the image parameters.
+ */
+struct mp_image_params;
+struct mp_osd_res;
+struct mp_rect;
 
 /*
  * Private data for the GPU next render backend.
@@ -125,7 +138,8 @@ static int render(struct render_backend *ctx, mpv_render_param *params,
     // Render the video frame.
     pl_video_render(p->video_engine, frame, target_tex);
 
-    pl_tex_destroy(p->context->gpu, &target_tex);
+    // Destroy the temporary wrapper texture via the RA.
+    ra_next_tex_destroy(p->context->ra, &target_tex);
 
     if (p->context->fns->done_frame)
         p->context->fns->done_frame(p->context);
@@ -206,14 +220,15 @@ static bool check_format(struct render_backend *ctx, int imgfmt)
 static int get_target_size(struct render_backend *ctx, mpv_render_param *params, int *out_w, int *out_h)
 {
     struct priv *p = ctx->priv;
-    if (!p->context || !p->context->fns) return MPV_ERROR_UNINITIALIZED;
+    if (!p->context || !p->context->fns || !p->context->ra) return MPV_ERROR_UNINITIALIZED;
     pl_tex tex = NULL;
     int err = p->context->fns->wrap_fbo(p->context, params, &tex);
     if (err < 0) return err;
     if (!tex) return MPV_ERROR_GENERIC;
     *out_w = tex->params.w;
     *out_h = tex->params.h;
-    pl_tex_destroy(p->context->gpu, &tex);
+    // Destroy the temporary wrapper texture via the RA.
+    ra_next_tex_destroy(p->context->ra, &tex);
     return 0;
 }
 

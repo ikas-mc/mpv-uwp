@@ -1,12 +1,7 @@
 #pragma once
 
-#include <libplacebo/gpu.h>
-#include "video/out/libmpv.h"
-
-// Forward declarations to avoid excessive includes
-struct ra_next;
-struct mpv_global;
-struct mp_log;
+#include <libplacebo/gpu.h>  // for pl_gpu, pl_tex
+#include "mpv/render.h"      // for mpv_render_param
 
 /**
  * This struct represents an instance of a specific API context implementation.
