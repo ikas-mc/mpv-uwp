@@ -326,9 +326,6 @@ mswin_flags = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-DUNICODE',
                '-D_CRT_DECLARE_NONSTDC_NAMES', '-D_CRT_NONSTDC_NO_WARNINGS',
                '-D_CRT_SECURE_NO_WARNINGS', '-DWINRT_NO_SOURCE_LOCATION']
 
-# https://developercommunity.visualstudio.com/t/NAN-is-no-longer-compile-time-constant-i/10688907
-mswin_flags += '-D_UCRT_NOISY_NAN'
-
 if host_machine.system() == 'windows'
     flags += [mswin_flags]
     flags_c += ['-U__STRICT_ANSI__']
@@ -444,6 +441,12 @@ endif
 if posix and not darwin
     path_source = files('osdep/path-unix.c')
     timer_source = files('osdep/timer-linux.c')
+endif
+
+if host_machine.system() == 'linux'
+    sources += files('osdep/als-linux.c')
+else
+    sources += files('osdep/als-voctrl.c')
 endif
 
 features += {'ppoll': cc.has_function('ppoll', args: '-D_GNU_SOURCE',

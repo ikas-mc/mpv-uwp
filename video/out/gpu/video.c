@@ -443,8 +443,10 @@ const struct m_sub_options gl_video_conf = {
         {"target-trc", OPT_CHOICE_C(target_trc, pl_csp_trc_names)},
         {"target-peak", OPT_CHOICE(target_peak, {"auto", 0}),
             M_RANGE(10, 10000)},
+        {"hdr-reference-white", OPT_CHOICE(hdr_reference_white, {"auto", 0}),
+            M_RANGE(10, 10000)},
         {"target-contrast", OPT_CHOICE(target_contrast, {"auto", 0}, {"inf", -1}),
-            M_RANGE(10, 1000000)},
+            M_RANGE(10, 10 / PL_COLOR_HDR_BLACK)},
         {"target-gamut", OPT_CHOICE_C(target_gamut, pl_csp_prim_names)},
         {"tone-mapping", OPT_CHOICE(tone_map.curve,
             {"auto",     TONE_MAPPING_AUTO},
@@ -1147,7 +1149,7 @@ static void pass_record(struct gl_video *p, const struct mp_pass_perf *perf)
     p->pass_idx++;
 }
 
-PRINTF_ATTRIBUTE(2, 3)
+MP_PRINTF_ATTRIBUTE(2, 3)
 static void pass_describe(struct gl_video *p, const char *textf, ...)
 {
     if (!p->pass || p->pass_idx == VO_PASS_PERF_MAX)

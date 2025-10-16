@@ -41,6 +41,7 @@
 #include "common/stats.h"
 #include "filters/f_decoder_wrapper.h"
 #include "command.h"
+#include "osdep/als.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "common/common.h"
@@ -2837,12 +2838,20 @@ static int mp_property_ambient_light(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    struct vo *vo = mpctx->video_out;
-    double lux;
-    if (!vo || vo_control(vo, VOCTRL_GET_AMBIENT_LUX, &lux) < 1)
-        return M_PROPERTY_UNAVAILABLE;
+    if (!mpctx->als_state) {
+        mpctx->als_state = mp_als_create(mpctx, mpctx);
+    }
 
-    return m_property_double_ro(action, arg, lux);
+    double lux;
+    switch (mp_als_get_lux(mpctx->als_state, &lux)) {
+    case MP_ALS_STATUS_OK:
+        return m_property_double_ro(action, arg, lux);
+    case MP_ALS_STATUS_NODEVICE:
+        return M_PROPERTY_UNAVAILABLE;
+    case MP_ALS_STATUS_READFAILED:
+    default:
+        return M_PROPERTY_ERROR;
+    }
 }
 
 static int mp_property_focused(void *ctx, struct m_property *prop,
@@ -7347,11 +7356,14 @@ const struct mp_cmd_def mp_cmds[] = {
     { "screenshot", cmd_screenshot,
         {
             {"flags", OPT_FLAGS(v.i,
-                {"video", 4|0}, {"-", 4|0},
-                {"window", 4|1},
-                {"subtitles", 4|2},
-                {"each-frame", 8}),
-                OPTDEF_INT(4|2)},
+                {"video", 0},
+                {"scaled", 1},
+                {"subtitles", 2},
+                {"osd", 4},
+                {"each-frame", 8},
+                {"-", 0},
+                {"window", 1|2|4}),
+                OPTDEF_INT(2)},
             // backwards compatibility
             {"legacy", OPT_CHOICE(v.i,
                 {"unused", 0}, {"single", 0},
@@ -7365,8 +7377,10 @@ const struct mp_cmd_def mp_cmds[] = {
             {"filename", OPT_STRING(v.s)},
             {"flags", OPT_CHOICE(v.i,
                 {"video", 0},
-                {"window", 1},
-                {"subtitles", 2}),
+                {"scaled", 1},
+                {"subtitles", 2},
+                {"osd", 4},
+                {"window", 1|2|4}),
                 OPTDEF_INT(2)},
         },
         .spawn_thread = true,
@@ -7375,8 +7389,10 @@ const struct mp_cmd_def mp_cmds[] = {
         {
             {"flags", OPT_CHOICE(v.i,
                 {"video", 0},
-                {"window", 1},
-                {"subtitles", 2}),
+                {"scaled", 1},
+                {"subtitles", 2},
+                {"osd", 4},
+                {"window", 1|2|4}),
                 OPTDEF_INT(2)},
              {"format", OPT_CHOICE(v.i,
                 {"bgr0", 0},
