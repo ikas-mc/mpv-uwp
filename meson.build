@@ -471,8 +471,7 @@ endif
 features += {'android': host_machine.system() == 'android'}
 if features['android']
     dependencies += cc.find_library('android')
-    sources += files('audio/out/ao_audiotrack.c',
-                     'misc/jni.c',
+    sources += files('misc/jni.c',
                      'osdep/android/strnlen.c',
                      'video/out/android_common.c',
                      'video/out/vo_mediacodec_embed.c')
@@ -648,6 +647,7 @@ iconv = dependency('iconv', required: get_option('iconv'))
 features += {'iconv': iconv.found()}
 if features['iconv']
     dependencies += iconv
+    add_project_arguments('-DWINICONV_CONST=', language: ['c', 'objc'])
 endif
 
 javascript = dependency('mujs', version: '>= 1.0.0', required: get_option('javascript'))
@@ -739,19 +739,16 @@ if features['rubberband']
     sources += files('audio/filter/af_rubberband.c')
 endif
 
-sdl2 = dependency('sdl2', required: get_option('sdl2'))
-features += {'sdl2': sdl2.found()}
-if features['sdl2']
-    dependencies += sdl2
-endif
+sdl2 = dependency('sdl2', required: false)
 
 sdl2_gamepad = get_option('sdl2-gamepad').require(
-    features['sdl2'],
+    sdl2.found(),
     error_message: 'sdl2 was not found!',
 )
 features += {'sdl2-gamepad': sdl2_gamepad.allowed()}
 if features['sdl2-gamepad']
     sources += files('input/sdl_gamepad.c')
+    dependencies += sdl2
 endif
 
 uchardet_opt = get_option('uchardet').require(
@@ -771,6 +768,14 @@ features += {'vapoursynth': vapoursynth.found() and vapoursynth_script.found()}
 if features['vapoursynth']
     dependencies += [vapoursynth, vapoursynth_script]
     sources += files('video/filter/vf_vapoursynth.c')
+endif
+
+xfixes = dependency('xfixes', version: '>= 1.0.0', required: get_option('x11-clipboard'))
+libx11 = dependency('x11', version: '>= 1.0.0', required: get_option('x11-clipboard'))
+features += {'x11-clipboard': xfixes.found() and libx11.found()}
+if features['x11-clipboard']
+    dependencies += [xfixes, libx11]
+    sources += files('player/clipboard/clipboard-x11.c')
 endif
 
 zimg = dependency('zimg', version: '>= 2.9', required: get_option('zimg'))
@@ -855,6 +860,19 @@ if features['openal']
     sources += files('audio/out/ao_openal.c')
 endif
 
+features += {'audiotrack':
+    get_option('audiotrack').require(features['android']).allowed()}
+if features['audiotrack']
+    sources += files('audio/out/ao_audiotrack.c')
+endif
+
+aaudio_opt = get_option('aaudio').require(features['android'])
+features += {'aaudio': cc.has_header_symbol('aaudio/AAudio.h',
+                                            'AAudioStream', required: aaudio_opt)}
+if features['aaudio']
+    sources += files('audio/out/ao_aaudio.c')
+endif
+
 opensles = cc.find_library('OpenSLES', required: get_option('opensles'))
 features += {'opensles': opensles.found()}
 if features['opensles']
@@ -887,12 +905,13 @@ if features['pulse']
 endif
 
 sdl2_audio = get_option('sdl2-audio').require(
-    features['sdl2'],
+    sdl2.found(),
     error_message: 'sdl2 was not found!',
 )
 features += {'sdl2-audio': sdl2_audio.allowed()}
 if features['sdl2-audio']
     sources += files('audio/out/ao_sdl.c')
+    dependencies += sdl2
 endif
 
 sndio = dependency('sndio', required: get_option('sndio'))
@@ -967,12 +986,13 @@ if features['jpeg']
 endif
 
 sdl2_video = get_option('sdl2-video').require(
-    features['sdl2'],
+    sdl2.found(),
     error_message: 'sdl2 was not found!',
 )
 features += {'sdl2-video': sdl2_video.allowed()}
 if features['sdl2-video']
     sources += files('video/out/vo_sdl.c')
+    dependencies += sdl2
 endif
 
 shaderc = dependency('shaderc', required: get_option('shaderc'))
@@ -1839,7 +1859,8 @@ if get_option('cplayer')
         osxbundle = find_program(join_paths(tools_directory, 'osxbundle.py'), required: true)
         custom_target('macos-bundle',
             output: 'mpv.app',
-            command: [osxbundle, mpv.full_path(), '@SOURCE_ROOT@'],
+            depends: version_h,
+            command: [osxbundle, mpv, '@SOURCE_ROOT@', '-c', get_option('macos-bundle-category')],
         )
     endif
 
@@ -1872,7 +1893,13 @@ if get_option('fuzzers')
     subdir('fuzzers')
 endif
 
-summary({'d3d11': features['d3d11'],
+if features['sdl2-audio'] or features['sdl2-gamepad'] or features['sdl2-video']
+    warning('You are building with optional SDL2 support. If you encounter build issues, try disabling it.')
+endif
+
+summary({'cocoa': features['cocoa'] and features['swift'],
+         'd3d11': features['d3d11'],
+         'drm': features['drm'],
          'javascript': features['javascript'],
          'libmpv': get_option('libmpv'),
          'lua': features['lua'],

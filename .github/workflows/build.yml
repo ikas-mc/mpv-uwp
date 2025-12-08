@@ -47,7 +47,7 @@ jobs:
           - arch: x86_64
             wine: wine64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Get time
         id: get_time
@@ -104,7 +104,7 @@ jobs:
         run: |
           cat ./mingw_build/meson-logs/testlog.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: mpv-${{ env.TARGET }}
           path: mpv-git-*.zip
@@ -146,7 +146,7 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Get time
         id: get_time
@@ -207,7 +207,7 @@ jobs:
         run: |
           cat ./build/meson-logs/testlog.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: mpv-${{ matrix.target }}
           path: |
@@ -228,21 +228,20 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: "macos-13"
-            arch: "intel"
-            xcode: "Xcode_14.1"
-            homebrew: "2e821e2d8ae38540311cd6ec60f6e1b23d61d167"
           - os: "macos-14"
             arch: "arm"
-            xcode: "Xcode_15.2"
+            xcode: "Xcode_15.0"
           - os: "macos-15"
             arch: "arm"
-          - os: "macos-15"
+          - os: "macos-15-intel"
+          - os: "macos-26"
+            arch: "arm"
+          - os: "macos-26"
             arch: "test"
             swift: "-target arm64-apple-macosx10.15"
             target: "10.15"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Remove stray upstream python binary symlinks under /usr/local
         run: |
@@ -300,10 +299,10 @@ jobs:
         run: |
           cat ./build/meson-logs/testlog.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: ${{ matrix.arch != 'test' }}
         with:
-          name: mpv-${{ matrix.os }}-${{ matrix.arch }}
+          name: mpv-${{ matrix.os }}${{ matrix.arch != '' && format('-{0}', matrix.arch) || '' }}
           path: mpv.tar.gz
 
   linux:
@@ -326,7 +325,7 @@ jobs:
             ld: "lld"
             args: "-Db_lto=true -Db_lto_mode=thin"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build with meson
         id: build
@@ -341,7 +340,6 @@ jobs:
       - name: Run meson tests
         id: tests
         run: |
-          export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/.lsan_suppressions"
           meson test -C build
 
       - name: Print meson test log
@@ -357,14 +355,13 @@ jobs:
         CC: "clang"
         CXX: "clang++"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build with meson
         id: build
         run: |
           meson setup build \
             --werror        \
-            -Dc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
             -Dfuzzers=true -Dlibmpv=true -Dcplayer=false
           meson compile -C build fuzzers
 
@@ -381,7 +378,7 @@ jobs:
       # used features to test build compatibility. Musl is a nice bonus as well
       image: alpine:3.19
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install dependencies
         run: |
           apk update
@@ -429,12 +426,12 @@ jobs:
     runs-on: ubuntu-latest # until https://github.com/actions/runner/issues/385
     timeout-minutes: 15 # avoid any weirdness with the VM
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - name: Test in OpenBSD VM
-      uses: cross-platform-actions/action@v0.29.0
+      uses: cross-platform-actions/action@v0.30.0
       with:
         operating_system: openbsd
-        version: '7.7'
+        version: '7.8'
         run: |
             sudo pkg_add -U \
                 cmake \
@@ -475,9 +472,9 @@ jobs:
     runs-on: ubuntu-latest # until https://github.com/actions/runner/issues/385
     timeout-minutes: 15 # avoid any weirdness with the VM
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - name: Test in FreeBSD VM
-      uses: cross-platform-actions/action@v0.29.0
+      uses: cross-platform-actions/action@v0.30.0
       with:
         operating_system: freebsd
         version: '14.3'
@@ -500,7 +497,7 @@ jobs:
                 libplacebo \
                 libXinerama \
                 libxkbcommon \
-                libxpresent \
+                libXpresent \
                 libXv \
                 luajit \
                 meson \
@@ -548,7 +545,7 @@ jobs:
         run: |
           git config --global core.autocrlf false
           git config --global core.eol lf
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.sys }}

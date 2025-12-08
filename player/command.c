@@ -3193,7 +3193,7 @@ static int mp_property_fps(void *ctx, struct m_property *prop,
     MPContext *mpctx = ctx;
     float fps = mpctx->vo_chain ? mpctx->vo_chain->filter->container_fps : 0;
     if (fps < 0.1 || !isfinite(fps))
-        return M_PROPERTY_UNAVAILABLE;;
+        return M_PROPERTY_UNAVAILABLE;
     return m_property_float_ro(action, arg, fps);
 }
 
@@ -7438,7 +7438,7 @@ const struct mp_cmd_def mp_cmds[] = {
     { "playlist-clear", cmd_playlist_clear },
     { "playlist-remove", cmd_playlist_remove, {
         {"index", OPT_CHOICE(v.i, {"current", -1}),
-            .flags = MP_CMD_OPT_ARG, M_RANGE(0, INT_MAX)}, }},
+            M_RANGE(0, INT_MAX)}, }},
     { "playlist-move", cmd_playlist_move,  { {"index1", OPT_INT(v.i)},
                                              {"index2", OPT_INT(v.i)}, }},
     { "run", cmd_run, { {"command", OPT_STRING(v.s)},
@@ -8027,7 +8027,8 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
         run_command_opts(mpctx);
     }
 
-    if (opt_ptr == &opts->playback_speed || opt_ptr == &opts->playback_pitch) {
+    if (opt_ptr == &opts->playback_speed || opt_ptr == &opts->playback_pitch ||
+        opt_ptr == &opts->pitch_correction) {
         update_playback_speed(mpctx);
         mp_wakeup_core(mpctx);
     }
@@ -8056,10 +8057,11 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
 #if HAVE_LIBBLURAY
     if (opt_ptr == &opts->stream_bluray_opts->angle) {
         struct demuxer *demuxer = mpctx->demuxer;
-        if (mpctx->playback_initialized && demuxer && demuxer->stream && strcmp(demuxer->stream->info->name, "bdvm/bluray")) {
+        if (mpctx->playback_initialized && demuxer && demuxer->stream &&
+                (!strcmp(demuxer->stream->info->name, "bd") ||
+                 !strcmp(demuxer->stream->info->name, "bdmv/bluray"))) {
             int angle = opts->stream_bluray_opts->angle - 1;
             stream_control(demuxer->stream, STREAM_CTRL_SET_ANGLE, &angle);
-            demux_flush(demuxer);
         }
     }
 #endif
@@ -8120,6 +8122,9 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
 
     if (opt_ptr == &opts->vo->taskbar_progress)
         update_vo_playback_state(mpctx);
+
+    if (opt_ptr == &opts->force_vo)
+        handle_force_window(mpctx, false);
 
     if (opt_ptr == &opts->image_display_duration && mpctx->vo_chain
         && mpctx->vo_chain->is_sparse && !mpctx->ao_chain

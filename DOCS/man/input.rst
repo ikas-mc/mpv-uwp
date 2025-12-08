@@ -1893,10 +1893,10 @@ Hooks
 
 Hooks are synchronous events between player core and a script or similar. This
 applies to client API (including the Lua scripting interface). Normally,
-events are supposed to be asynchronous, and the hook API provides an awkward
-and obscure way to handle events that require stricter coordination. There are
-no API stability guarantees made. Not following the protocol exactly can make
-the player freeze randomly. Basically, nobody should use this API.
+events are supposed to be asynchronous, and the hook API provides a way to
+handle events that require stricter coordination. Not following the protocol
+exactly can make the player freeze. Use with caution, avoid if synchronous event
+handling is not required.
 
 The C API is described in the header files. The Lua API is described in the
 Lua section.
@@ -4132,12 +4132,11 @@ Property list
     This has a number of sub-properties:
 
     ``clipboard/text`` (RW)
-        The text content in the clipboard (Windows, Wayland and macOS only).
+        The text content in the clipboard.
         Writing to this property sets the text clipboard content
-        (Windows, Wayland and macOS only).
 
     ``clipboard/text-primary`` (RW)
-        The text content in the primary selection (Wayland only).
+        The text content in the primary selection (X11 and Wayland only).
 
     .. note::
 
