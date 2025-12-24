@@ -70,6 +70,9 @@ extern const struct m_sub_options demux_rawvideo_conf;
 extern const struct m_sub_options demux_playlist_conf;
 extern const struct m_sub_options demux_lavf_conf;
 extern const struct m_sub_options demux_mkv_conf;
+#if HAVE_SUBRANDR
+extern const struct m_sub_options demux_sbr_conf;
+#endif
 extern const struct m_sub_options vd_lavc_conf;
 extern const struct m_sub_options ad_lavc_conf;
 extern const struct m_sub_options hwdec_conf;
@@ -563,7 +566,6 @@ static const m_option_t mp_opts[] = {
     {"ytdl", OPT_BOOL(lua_load_ytdl), .flags = UPDATE_BUILTIN_SCRIPTS},
     {"ytdl-format", OPT_STRING(lua_ytdl_format)},
     {"ytdl-raw-options", OPT_KEYVALUELIST(lua_ytdl_raw_options)},
-    {"ytdl-extract-chapters", OPT_BOOL(lua_ytdl_extract_chapters)},
     {"load-stats-overlay", OPT_BOOL(lua_load_stats),
         .flags = UPDATE_BUILTIN_SCRIPTS},
     {"load-console", OPT_BOOL(lua_load_console),
@@ -704,6 +706,9 @@ static const m_option_t mp_opts[] = {
     {"demuxer-rawvideo", OPT_SUBSTRUCT(demux_rawvideo, demux_rawvideo_conf)},
     {"", OPT_SUBSTRUCT(demux_playlist, demux_playlist_conf)},
     {"demuxer-mkv", OPT_SUBSTRUCT(demux_mkv, demux_mkv_conf)},
+#if HAVE_SUBRANDR
+    {"demuxer-sbr", OPT_SUBSTRUCT(demux_sbr, demux_sbr_conf)},
+#endif
 
 // ------------------------- subtitles options --------------------
 
@@ -1004,7 +1009,6 @@ static const struct MPOpts mp_default_opts = {
     .lua_load_ytdl = true,
     .lua_ytdl_format = NULL,
     .lua_ytdl_raw_options = NULL,
-    .lua_ytdl_extract_chapters = true,
     .lua_load_stats = true,
     .lua_load_console = true,
     .lua_load_auto_profiles = -1,
@@ -1100,6 +1104,7 @@ static const struct MPOpts mp_default_opts = {
         "scc",
         "smi",
         "srt",
+        "srv3",
         "ssa",
         "sub",
         "sup",
@@ -1107,6 +1112,7 @@ static const struct MPOpts mp_default_opts = {
         "utf-8",
         "utf8",
         "vtt",
+        "ytt",
         NULL
     },
 

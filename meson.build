@@ -355,6 +355,13 @@ if features['libdl']
     dependencies += libdl
 endif
 
+subrandr = dependency('subrandr', version: '>= 0.1.1', required: get_option('subrandr'))
+features += {'subrandr': subrandr.found()}
+if features['subrandr']
+    sources += files('demux/demux_sbr.c', 'sub/sd_sbr.c')
+    dependencies += subrandr
+endif
+
 # C11 atomics are mandatory but linking to the library is not always required.
 dependencies += cc.find_library('atomic', required: false)
 
@@ -1033,14 +1040,14 @@ if features['d3d11']
 endif
 
 wayland = {
-    'deps': [dependency('wayland-client', version: '>= 1.21.0', required: get_option('wayland')),
-             dependency('wayland-cursor', version: '>= 1.21.0', required: get_option('wayland')),
-             dependency('wayland-protocols', version: '>= 1.31', required: get_option('wayland')),
+    'deps': [dependency('wayland-client', version: '>= 1.23.0', required: get_option('wayland')),
+             dependency('wayland-cursor', version: '>= 1.23.0', required: get_option('wayland')),
+             dependency('wayland-protocols', version: '>= 1.38', required: get_option('wayland')),
              dependency('xkbcommon', version: '>= 0.3.0', required: get_option('wayland'))],
     'header': cc.has_header('linux/input-event-codes.h', required: get_option('wayland'),
                             # Pass CFLAGS from a related package as a hint for non-Linux
                             dependencies: dependency('wayland-client', required: get_option('wayland'))),
-    'scanner': find_program('wayland-scanner', required: get_option('wayland')),
+    'scanner': find_program('wayland-scanner', version: '>= 1.23.0', required: get_option('wayland')),
 }
 wayland_deps = true
 foreach dep: wayland['deps']
@@ -1392,6 +1399,13 @@ features += {'d3d-hwaccel': d3d_hwaccel.allowed()}
 if features['d3d-hwaccel']
     sources += files('video/d3d.c',
                      'video/filter/vf_d3d11vpp.c')
+endif
+
+amf = cc.has_header('AMF/core/Factory.h', required:
+    get_option('amf').require(features['d3d-hwaccel']))
+features += {'amf': amf}
+if features['amf']
+    sources += files('video/filter/vf_amf.c')
 endif
 
 if features['d3d-hwaccel'] and features['egl-angle']
@@ -1768,11 +1782,7 @@ if win32
     # Hence, these includes are needed.
     res_includes = [source_root, build_root]
 
-    resources = ['etc/mpv-icon-8bit-16x16.png',
-                 'etc/mpv-icon-8bit-32x32.png',
-                 'etc/mpv-icon-8bit-64x64.png',
-                 'etc/mpv-icon-8bit-128x128.png',
-                 'etc/mpv-icon.ico',
+    resources = ['etc/mpv-icon.ico',
                  'osdep/mpv.exe.manifest']
 
     sources += windows.compile_resources('osdep/mpv.rc', args: res_flags, depend_files: resources,
