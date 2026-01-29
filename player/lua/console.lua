@@ -48,8 +48,6 @@ local opts = {
     case_sensitive = false,
     history_dedup = true,
     font_hw_ratio = "auto",
-    selected_color = "",
-    selected_back_color = "",
 }
 
 local styles = {
@@ -91,11 +89,14 @@ local searching_history = false
 local history_paths = {}
 local histories_to_save = {}
 
+local MAX_LOG_LINES = 10000
 local log_buffers = {}
+local log_offset = 0
 local key_bindings = {}
 local dont_bind_up_down = false
 local global_margins = { t = 0, b = 0 }
 local input_caller
+local input_caller_handler
 local keep_open = false
 
 local completion_buffer = {}
@@ -114,6 +115,7 @@ local first_match_to_print = 1
 local default_item
 local item_positions = {}
 local max_item_width = 0
+local horizontal_offset = 0
 
 local complete
 local cycle_through_completions
@@ -342,8 +344,10 @@ local function calculate_max_item_width()
                          (font and "\\fn" .. font or "") .. "\\q2}" ..
                          ass_escape(longest_item)
     local result = width_overlay:update()
-    max_item_width = math.min(result.x1 - result.x0,
-                              osd_w - get_margin_x() * 2 - opts.padding * 2)
+    if result.x0 then
+        max_item_width = math.min(result.x1 - result.x0,
+                                  osd_w - get_margin_x() * 2 - opts.padding * 2)
+    end
 end
 
 local function should_highlight_completion(i)
@@ -541,6 +545,11 @@ local function get_matches_to_print(terminal)
     local last_match_to_print  = math.min(first_match_to_print + max_lines - 1,
                                           #matches)
 
+    if last_match_to_print - first_match_to_print + 1 < math.min(max_lines, #matches) and
+       last_match_to_print >= math.min(max_lines, #matches) then
+        first_match_to_print = last_match_to_print - math.min(max_lines, #matches) + 1
+    end
+
     for i = first_match_to_print, last_match_to_print do
         local item = ""
         local end_highlight = terminal and terminal_styles.match_end or "{\\1c}"
@@ -709,7 +718,7 @@ local function render()
             (global_margins.t + (1 - global_margins.t - global_margins.b) / 2) -
             (math.min(#selectable_items, max_lines) + 1.5) * line_height / 2
         alignment = 7
-        clipping_coordinates = "0,0," .. x + max_item_width .. "," .. osd_h
+        clipping_coordinates = x .. ",0," .. x + max_item_width .. "," .. osd_h
     else
         x = get_margin_x()
         y = osd_h * (1 - global_margins.b) - get_margin_y()
@@ -752,7 +761,9 @@ local function render()
 
     local log_ass = ""
     local log_buffer = log_buffers[id] or {}
-    for i = #log_buffer - math.min(max_lines, #log_buffer) + 1, #log_buffer do
+    log_offset = math.max(math.min(log_offset, #log_buffer - max_lines), 0)
+    for i = #log_buffer - math.min(max_lines, #log_buffer) - log_offset + 1,
+            #log_buffer - log_offset do
         log_ass = log_ass .. style .. log_buffer[i].style ..
                   ass_escape(log_buffer[i].text) .. "\\N"
     end
@@ -828,7 +839,7 @@ local function render()
 
         ass:new_event()
         ass:an(4)
-        ass:pos(x, item_y)
+        ass:pos(x - horizontal_offset, item_y)
         ass:append(style .. item)
 
         item_positions[#item_positions + 1] =
@@ -939,7 +950,7 @@ end
 local function handle_edit()
     if not selectable_items then
         handle_cursor_move()
-        mp.commandv("script-message-to", input_caller, "input-event", "edited",
+        mp.commandv("script-message-to", input_caller, input_caller_handler, "edited",
                     utils.format_json({line}))
         return
     end
@@ -1060,7 +1071,7 @@ local function submit()
 
     if selectable_items then
         if #matches > 0 then
-            mp.commandv("script-message-to", input_caller, "input-event", "submit",
+            mp.commandv("script-message-to", input_caller, input_caller_handler, "submit",
                         utils.format_json({matches[focused_match].index}))
         end
     else
@@ -1069,7 +1080,7 @@ local function submit()
             cycle_through_completions()
         end
 
-        mp.commandv("script-message-to", input_caller, "input-event", "submit",
+        mp.commandv("script-message-to", input_caller, input_caller_handler, "submit",
                     utils.format_json({line}))
 
         history_add(line)
@@ -1202,6 +1213,11 @@ local function move_history(amount, is_wheel)
     render()
 end
 
+local function horizontal_scroll(amount)
+    horizontal_offset = math.max(horizontal_offset + amount, 0)
+    render()
+end
+
 -- Go to the first command in the command history (PgUp)
 local function handle_pgup()
     if selectable_items then
@@ -1231,6 +1247,7 @@ local function search_history()
 
     searching_history = true
     selectable_items = {}
+    horizontal_offset = 0
 
     for i = 1, #history do
         selectable_items[i] = history[#history + 1 - i]
@@ -1327,6 +1344,15 @@ local function clear_log_buffer()
     if not selectable_items then
         log_buffers[id] = {}
     end
+    render()
+end
+
+local function scroll_log(amount)
+    if selectable_items then
+        return
+    end
+
+    log_offset = log_offset + amount
     render()
 end
 
@@ -1456,7 +1482,7 @@ end
 complete = function ()
     completion_old_line = line
     completion_old_cursor = cursor
-    mp.commandv("script-message-to", input_caller, "input-event",
+    mp.commandv("script-message-to", input_caller, input_caller_handler,
                 "complete", utils.format_json({line:sub(1, cursor - 1)}))
     render()
 end
@@ -1490,8 +1516,16 @@ local function get_bindings()
         { "down",        function() move_history(1) end         },
         { "ctrl+n",      function() move_history(1) end         },
         { "wheel_down",  function() move_history(1, true) end   },
+        { "shift+up",    function() scroll_log(1)  end          },
+        { "shift+down",  function() scroll_log(-1) end          },
         { "wheel_left",  function() end                         },
         { "wheel_right", function() end                         },
+        { "shift+left",  function() horizontal_scroll(-25) end  },
+        { "shift+right", function() horizontal_scroll( 25) end  },
+        { "wheel_left",  function() horizontal_scroll(-25) end  },
+        { "wheel_right", function() horizontal_scroll( 25) end  },
+        { "shift+wheel_up",   function() horizontal_scroll(-25) end },
+        { "shift+wheel_down", function() horizontal_scroll( 25) end },
         { "ctrl+left",   prev_word                              },
         { "alt+b",       prev_word                              },
         { "ctrl+right",  next_word                              },
@@ -1618,25 +1652,30 @@ set_active = function (active)
         unbind_mouse()
         mp.set_property_bool("user-data/mpv/console/open", false)
         mp.set_property_bool("input-ime", ime_active)
-        mp.commandv("script-message-to", input_caller, "input-event",
+        mp.commandv("script-message-to", input_caller, input_caller_handler,
                     "closed", utils.format_json({line, cursor}))
         collectgarbage()
     end
     render()
 end
 
-mp.register_script_message("disable", function()
-    set_active(false)
+mp.register_script_message("disable", function(message)
+    message = utils.parse_json(message or "")
+
+    if not message or message.client_name == input_caller then
+        set_active(false)
+    end
 end)
 
-mp.register_script_message("get-input", function (script_name, args)
-    if open and script_name ~= input_caller then
-        mp.commandv("script-message-to", input_caller, "input-event",
+mp.register_script_message("get-input", function (args)
+    if open then
+        mp.commandv("script-message-to", input_caller, input_caller_handler,
                     "closed", utils.format_json({line, cursor}))
     end
 
-    input_caller = script_name
     args = utils.parse_json(args)
+    input_caller = args.client_name
+    input_caller_handler = args.handler_id
     prompt = args.prompt or ""
     line = args.default_text or ""
     cursor = tonumber(args.cursor_position) or line:len() + 1
@@ -1648,6 +1687,7 @@ mp.register_script_message("get-input", function (script_name, args)
 
     if args.items then
         selectable_items = {}
+        horizontal_offset = 0
 
         -- Limit the number of characters to prevent libass from freezing mpv.
         -- Not important for terminal output.
@@ -1659,7 +1699,9 @@ mp.register_script_message("get-input", function (script_name, args)
         end
 
         for i, item in ipairs(args.items) do
-            selectable_items[i] = item:gsub("[\r\n].*", "⋯"):sub(1, limit)
+            local last = next_utf8(item, limit) - 1
+            selectable_items[i] = item:gsub("[\r\n].*", "…"):sub(1, last) ..
+                                  (last < #item and "…" or "")
         end
 
         calculate_max_item_width()
@@ -1668,7 +1710,8 @@ mp.register_script_message("get-input", function (script_name, args)
     else
         selectable_items = nil
         unbind_mouse()
-        id = args.id or script_name .. prompt
+        id = args.id
+        log_offset = 0
         completion_buffer = {}
         autoselect_completion = args.autoselect_completion
 
@@ -1684,17 +1727,26 @@ mp.register_script_message("get-input", function (script_name, args)
 
         if line ~= "" then
             complete()
+        elseif open then
+            -- This is needed to update the prompt if a new request is
+            -- received while another is still active.
+            render()
         end
     end
 
     set_active(true)
-    mp.commandv("script-message-to", input_caller, "input-event", "opened")
+    mp.commandv("script-message-to", input_caller, input_caller_handler, "opened")
 end)
 
--- Add a line to the log buffer (which is limited to 100 lines)
+-- Add a line to the log buffer
 mp.register_script_message("log", function (message)
-    local log_buffer = log_buffers[id]
-    message = utils.parse_json(message)
+    message = utils.parse_json(message or "")
+    if not message or not message.log_id then
+        return
+    end
+
+    local log_buffer = log_buffers[message.log_id]
+    if not log_buffer then return end
 
     log_buffer[#log_buffer + 1] = {
         text = message.text,
@@ -1703,12 +1755,16 @@ mp.register_script_message("log", function (message)
                          message.terminal_style or "",
     }
 
-    if #log_buffer > 100 then
+    if #log_buffer > MAX_LOG_LINES then
         table.remove(log_buffer, 1)
     end
 
-    if not open then
+    if not open or message.log_id ~= id then
         return
+    end
+
+    if log_offset > 0 then
+        log_offset = log_offset + 1
     end
 
     if not update_timer:is_enabled() then
@@ -1719,9 +1775,13 @@ mp.register_script_message("log", function (message)
     end
 end)
 
-mp.register_script_message("set-log", function (log)
+mp.register_script_message("set-log", function (log_id, log)
+    if not log_id or not log then
+        return
+    end
+
     log = utils.parse_json(log)
-    log_buffers[id] = {}
+    log_buffers[log_id] = {}
 
     for i = 1, #log do
         if type(log[i]) == "table" then
@@ -1738,20 +1798,25 @@ mp.register_script_message("set-log", function (log)
         end
     end
 
-    render()
+    if log_id == id then
+        render()
+    end
 end)
 
-mp.register_script_message("complete", function (list, start_pos, append)
-    if line ~= completion_old_line or cursor ~= completion_old_cursor then
+mp.register_script_message("complete", function (message)
+    message = utils.parse_json(message)
+
+    if message.client_name ~= input_caller or message.handler_id ~= input_caller_handler
+       or line ~= completion_old_line or cursor ~= completion_old_cursor then
         return
     end
 
     completion_buffer = {}
     selected_completion_index = 0
-    local completions = utils.parse_json(list)
+    local completions = message.list
     table.sort(completions)
-    completion_pos = start_pos
-    completion_append = append
+    completion_pos = message.start_pos
+    completion_append = message.append
     for i, match in ipairs(fuzzy_find(line:sub(completion_pos, cursor - 1),
                                       completions)) do
         completion_buffer[i] = completions[match[1]]
@@ -1818,15 +1883,5 @@ mp.register_script_message("type", function (...)
 end)
 
 require "mp.options".read_options(opts, nil, render)
-
-if opts.selected_color ~= "" then
-    opts.focused_color = opts.selected_color
-    mp.msg.warn("selected_color has been replaced by focused_color")
-end
-
-if opts.selected_back_color ~= "" then
-    opts.focused_back_color = opts.selected_back_color
-    mp.msg.warn("selected_back_color has been replaced by focused_back_color")
-end
 
 collectgarbage()

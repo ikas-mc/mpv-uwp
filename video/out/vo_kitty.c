@@ -474,6 +474,7 @@ static void uninit(struct vo *vo)
 #endif
 
     write_bstr_passthrough(p, KITTY_ESC_DELETE_ALL);
+    write_bstr_passthrough(p, KITTY_ESC_END);
 
     write_str(TERM_ESC_RESTORE_CURSOR);
 #if !HAVE_UWP

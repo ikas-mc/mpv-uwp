@@ -8,22 +8,23 @@ args=(
   -D{egl-angle-lib,egl-angle-win32,pdf-build,rubberband,win32-smtc}=enabled
 )
 
-if [[ "$SYS" == "clang64" ]]; then
+if [[ -n "$ASAN" ]]; then
     args+=(
       -Db_sanitize=address,undefined
     )
-else
-    # currently building with subrandr on clang64+asan
-    # causes a weird crash (https://github.com/msys2/MINGW-packages/issues/25267)
-    echo "::group::Building subrandr"
-    build_subrandr "/$SYS"
-    echo "::endgroup::"
-    args+=(-Dsubrandr=enabled)
 fi
 
-[[ "$SYS" == "clangarm64" ]] && args+=(
-  -Dpdf-build=disabled
-)
+if [[ -n "$AUTO_VAR_INIT" ]]; then
+    args+=(
+        -Dc_args="-ftrivial-auto-var-init=$AUTO_VAR_INIT"
+        -Dcpp_args="-ftrivial-auto-var-init=$AUTO_VAR_INIT"
+    )
+fi
+
+echo "::group::Building subrandr"
+build_subrandr "/$SYS"
+echo "::endgroup::"
+args+=(-Dsubrandr=enabled)
 
 meson setup build $common_args "${args[@]}"
 meson compile -C build
