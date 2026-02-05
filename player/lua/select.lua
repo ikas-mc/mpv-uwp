@@ -1015,12 +1015,13 @@ local function clamp_submenu(submenu, max, cmd)
 end
 
 local function playlist()
+    local show = get("osd-playlist-entry")
+
     if not get("playlist") then
         return
     end
 
     local items = {}
-    local show = get("osd-playlist-entry")
 
     for i, entry in ipairs(get("playlist")) do
         items[i] = {
@@ -1304,7 +1305,7 @@ local function get_menu_conf()
     end
 
     local lines = {}
-    for line in menu_conf:gmatch("(.-)\n") do
+    for line in menu_conf:gmatch("(.-)\r?\n") do
         lines[#lines + 1] = line
     end
 
@@ -1354,7 +1355,9 @@ local function parse_menu_conf(_, vo_configured)
 
         if line == "" then
             -- Determine the depth of the separator from the next line.
-            table.insert(menus_by_depth[lines[i + 1]:match("%s*")], item)
+            if lines[i + 1] then -- ignore newlines at the end
+                table.insert(menus_by_depth[lines[i + 1]:match("%s*")], item)
+            end
         else
             table.insert(menus_by_depth[leading_whitespace], item)
             last_leading_whitespace = leading_whitespace
