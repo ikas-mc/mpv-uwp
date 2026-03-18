@@ -138,7 +138,6 @@ struct vo_internal {
     bool send_reset;                // send VOCTRL_RESET
     bool paused;
     bool visible;
-    bool wait_on_vo;
     bool wakeup_on_done;
     int queued_events;              // event mask for the user
     int internal_events;            // event mask for us
@@ -837,7 +836,7 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
 {
     struct vo_internal *in = vo->in;
     mp_mutex_lock(&in->lock);
-    bool r = vo->config_ok && !in->wait_on_vo && !in->frame_queued &&
+    bool r = vo->config_ok && !in->frame_queued &&
              (!in->current_frame || in->current_frame->num_vsyncs < 1);
     if (r && next_pts >= 0) {
         // Don't show the frame too early - it would basically freeze the
@@ -899,14 +898,6 @@ void vo_wait_frame(struct vo *vo)
     mp_mutex_unlock(&in->lock);
 }
 
-void vo_wait_on_vo(struct vo *vo, bool wait)
-{
-    struct vo_internal *in = vo->in;
-    mp_mutex_lock(&in->lock);
-    in->wait_on_vo = wait;
-    mp_mutex_unlock(&in->lock);
-}
-
 // Wait until realtime is >= ts
 // called without lock
 static void wait_until(struct vo *vo, int64_t target)
@@ -940,7 +931,6 @@ static bool render_frame(struct vo *vo)
                (in->current_frame->display_synced && in->current_frame->num_vsyncs < 1) ||
                !in->current_frame->display_synced)
     {
-        in->wait_on_vo = false;
         goto done;
     }
 
@@ -1054,13 +1044,13 @@ static bool render_frame(struct vo *vo)
     if (in->dropped_frame) {
         MP_STATS(vo, "drop-vo");
     } else {
-        // If the initial redraw request was true or mpv is still playing,
-        // then we can clear it here since we just performed a redraw, or the
-        // next loop will draw what we need. However if there initially is
+        // If the initial redraw request was true and mpv is still playing,
+        // then we can clear it here since the next loop will guarantee that
+        // we draw whatever is needed. However if there initially is
         // no redraw request, then something can change this (i.e. the OSD)
         // while the vo was unlocked. If we are paused, don't touch
-        // in->request_redraw in that case.
-        if (request_redraw || !in->paused)
+        // in->request_redraw in that case and let do_redraw do the work later.
+        if (request_redraw && !in->paused)
             in->request_redraw = false;
     }
 
