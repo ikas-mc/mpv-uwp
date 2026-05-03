@@ -56,6 +56,7 @@
 #include "common/playlist.h"
 #include "options/options.h"
 #include "options/path.h"
+#include "input/dnd.h"
 #include "input/input.h"
 #include "demux/packet_pool.h"
 
@@ -321,7 +322,7 @@ struct MPContext *mp_create(void)
 
     char *verbose_env = getenv("MPV_VERBOSE");
     if (verbose_env)
-        mpctx->opts->verbose = atoi(verbose_env);
+        mpctx->opts->verbose = strtol(verbose_env, NULL, 10);
 
     mp_cancel_trigger(mpctx->playback_abort);
 
@@ -419,6 +420,8 @@ int mp_initialize(struct MPContext *mpctx, char **options)
     if (opts->media_controls)
         mp_smtc_init(mp_new_client(mpctx->clients, "SystemMediaTransportControls"));
 #endif
+
+    mp_dnd_init(mp_new_client(mpctx->clients, "dnd"));
 
     mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);
 

@@ -357,7 +357,7 @@ size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
         }
         return c;
     }
-#endif    
+#endif
 
 #undef fwrite
     return fwrite(buffer, size, count, stream);
@@ -773,42 +773,34 @@ int mp_ftruncate64(int fd, off_t length)
 thread_local
 static struct {
     DWORD errcode;
-    char *errstring;
-} mp_dl_result = {
-    .errcode = 0,
-    .errstring = NULL
-};
-
-static void mp_dl_free(void)
-{
-    talloc_free(mp_dl_result.errstring);
-}
-
-static void mp_dl_init(void)
-{
-    atexit(mp_dl_free);
-}
+    char errstring[1024];
+} mp_dl_result;
 
 void *mp_dlopen(const char *filename, int flag)
 {
     HMODULE lib = NULL;
     void *ta_ctx = talloc_new(NULL);
     wchar_t *wfilename = mp_from_utf8(ta_ctx, filename);
-#if HAVE_UWP
-    lib = LoadPackagedLibrary(wfilename, 0);
-#else
-    DWORD len = GetFullPathNameW(wfilename, 0, NULL, NULL);
-    if (!len)
-        goto err;
+    #if HAVE_UWP
+        lib = LoadPackagedLibrary(wfilename, 0);
+    #else
+    wchar_t *path = wfilename;
 
-    wchar_t *path = talloc_array(ta_ctx, wchar_t, len);
-    len = GetFullPathNameW(wfilename, len, path, NULL);
-    if (!len)
-        goto err;
-    lib = LoadLibraryW_2(path);
-#endif
+    if (strchr(filename, '/') || strchr(filename, '\\')) {
+        DWORD len = GetFullPathNameW(wfilename, 0, NULL, NULL);
+        if (!len)
+            goto err;
+
+        path = talloc_array(ta_ctx, wchar_t, len);
+        len = GetFullPathNameW(wfilename, len, path, NULL);
+        if (!len)
+            goto err;
+    }
+
+    lib = LoadLibraryW(path);
+    #endif
+
 err:
-
     talloc_free(ta_ctx);
     mp_dl_result.errcode = GetLastError();
     return (void *)lib;
@@ -821,19 +813,21 @@ void *mp_dlsym(void *handle, const char *symbol)
     return (void *)addr;
 }
 
+int mp_dlclose(void *handle)
+{
+    return CloseHandle(handle);
+}
+
 char *mp_dlerror(void)
 {
-    static mp_once once_init_dlerror = MP_STATIC_ONCE_INITIALIZER;
-    mp_exec_once(&once_init_dlerror, mp_dl_init);
-    mp_dl_free();
-
     if (mp_dl_result.errcode == 0)
         return NULL;
 
-    mp_dl_result.errstring = talloc_strdup(NULL, mp_HRESULT_to_str(mp_dl_result.errcode));
+    mp_HRESULT_to_str_buf(mp_dl_result.errstring, sizeof(mp_dl_result.errstring),
+                          mp_dl_result.errcode);
     mp_dl_result.errcode = 0;
 
-    return mp_dl_result.errstring == NULL
+    return !mp_dl_result.errstring[0]
         ? "unknown error"
         : mp_dl_result.errstring;
 }
@@ -937,7 +931,7 @@ int mp_make_cloexec_pipe(int pipes[2])
         pipes[0] = pipes[1] = -1;
         return -1;
     }
-#endif    
+#endif
     return 0;
 }
 
@@ -1003,7 +997,7 @@ error:
             CloseHandle(handles[i]);
         }
     }
-#endif    
+#endif
     return -1;
 }
 
@@ -1019,7 +1013,7 @@ void mp_flush_wakeup_pipe(int pipe_end)
         if (GetLastError() != ERROR_IO_PENDING || !CancelIoEx(handle, &operation))
             set_errno_from_lasterror();
     }
-#endif    
+#endif
 }
 
 #endif // __MINGW32__
