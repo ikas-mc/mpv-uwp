@@ -1842,8 +1842,8 @@ Video
     You can get the list of allowed codecs with ``mpv --vd=help``. Remove the
     prefix, e.g. instead of ``lavc:h264`` use ``h264``.
 
-    By default, this is set to ``h264,vc1,hevc,vp8,vp9,av1,prores,prores_raw,ffv1,dpx``. Note that
-    the hardware acceleration special codecs like ``h264_vdpau`` are not
+    By default, this is set to ``h264,vc1,hevc,vp8,vp9,av1,prores,prores_raw,ffv1,dpx,apv``.
+    Note that the hardware acceleration special codecs like ``h264_vdpau`` are not
     relevant anymore, and in fact have been removed from FFmpeg in this form.
 
     This is usually only needed with broken GPUs, where a codec is reported
@@ -3488,7 +3488,7 @@ Window
     :level:   A level as integer.
 
 ``--focus-on=<never|open|all>``,
-    (macOS only)
+    (X11 and macOS only)
     Focus the video window and make it the front most window on specific events (default: open).
 
     :never: Never focus the window on open or new file load events.
@@ -4396,9 +4396,10 @@ Demuxer
     ``--shuffle``, and like ``lazy`` otherwise.
 
 ``--directory-filter-types=<video,audio,image,archive,playlist>``
-    Media file types to filter when opening directory. To have all files added
-    to the playlist, clear the list using ``--directory-filter-types-clr``.
-    (Default: ``video,audio,image,archive,playlist``)
+    Media file types to filter when opening directories and archives. To have
+    all files added to the playlist, clear the list using
+    ``--directory-filter-types-clr``. (Default:
+    ``video,audio,image,archive,playlist``)
 
     This is a string list option. See `List Options`_ for details.
 
@@ -5307,7 +5308,7 @@ libavfilter, within the system audio API resampler, or any other places).
 
 ``--audio-resample-max-output-size=<length>``
     Limit maximum size of audio frames filtered at once, in ms (default: 40).
-    The output size size is limited in order to make resample speed changes
+    The output size is limited in order to make resample speed changes
     react faster. This is necessary especially if decoders or filters output
     very large frame sizes (like some lossless codecs or some DRC filters).
     This option does not affect the resampling algorithm in any way.
@@ -5425,11 +5426,7 @@ Terminal
     line. Expands properties. See `Property Expansion`_.
 
 ``--term-title=<string>``
-    Set the terminal title. Currently, this simply concatenates the escape
-    sequence setting the window title with the provided (property expanded)
-    string. This will mess up if the expanded string contain bytes that end the
-    escape sequence, or if the terminal does not understand the sequence. The
-    latter probably includes the regrettable win32.
+    Set the terminal title.
 
     Expands properties. See `Property Expansion`_.
 
