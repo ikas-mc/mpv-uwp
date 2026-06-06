@@ -42,6 +42,10 @@
 #include "osdep/strnlen.h"
 #include "ao_wasapi.h"
 
+#if HAVE_UWP_WASAPI
+#include "osdep/uwp/uwp-wasapi.h"
+#endif
+
 #ifdef _MSC_VER
 // Define some GUIDs that are defined only in C++ interfaces.
 DEFINE_GUID(KSDATAFORMAT_SPECIFIER_NONE,
@@ -1049,9 +1053,13 @@ retry:
         }
 #endif
     } else {
+#if HAVE_UWP_WASAPI
+        MP_VERBOSE(ao, "Trying UWP built-in wrapper.\n");
+#else
         MP_VERBOSE(ao, "Trying UWP wrapper.\n");
 
-        HRESULT (*wuCreateDefaultAudioRenderer)(IUnknown **res) = NULL;
+        HRESULT(*wuCreateDefaultAudioRenderer)(IUnknown * *res) = NULL;
+
 #if HAVE_UWP
         HANDLE lib = LoadPackagedLibrary(L"wasapiuwp2.dll", 0);
 #else
@@ -1069,6 +1077,7 @@ retry:
             MP_ERR(ao, "Function not found.\n");
             return false;
         }
+#endif
         IUnknown *res = NULL;
         hr = wuCreateDefaultAudioRenderer(&res);
         MP_VERBOSE(ao, "Device: %s %p\n", mp_HRESULT_to_str(hr), res);
