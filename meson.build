@@ -498,6 +498,7 @@ features += {'uwp': uwp.found()}
 if features['uwp']
     dependencies += uwp
     path_source = files('osdep/path-uwp.c')
+    subdir('osdep/uwp')
 endif
 
 features += {'win32-executable': win32 and get_option('cplayer')}
