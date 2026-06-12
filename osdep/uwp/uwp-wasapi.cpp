@@ -1,6 +1,7 @@
 #include "uwp-wasapi.h"
 
 #include <windows.h>
+#include <ppltasks.h>
 #include <AudioClient.h>
 #include <mmdeviceapi.h>
 #include <winrt/windows.media.devices.h>
@@ -8,59 +9,87 @@
 using namespace winrt::Windows::Media::Devices;
 
 struct WinrtAudioDeviceCreator : winrt::implements<WinrtAudioDeviceCreator, IActivateAudioInterfaceCompletionHandler> {
-    HANDLE completionEventHandle;
-    winrt::com_ptr<IUnknown> createdInterface{nullptr};
+    concurrency::task_completion_event<winrt::com_ptr<::IUnknown>> activationCompleted;
 
-    WinrtAudioDeviceCreator() { 
-        completionEventHandle = CreateEvent(nullptr, TRUE, FALSE, nullptr); 
+    WinrtAudioDeviceCreator() {
     }
 
-    ~WinrtAudioDeviceCreator() { 
-        CloseHandle(completionEventHandle); 
+    ~WinrtAudioDeviceCreator() {
     }
 
-    void beginCreate(const std::wstring_view &deviceId) {
-        winrt::com_ptr<IActivateAudioInterfaceAsyncOperation> asyncOperation{nullptr};
-        auto deviceIdData = deviceId.empty() ? MediaDevice::GetDefaultAudioRenderId(AudioDeviceRole::Default).data() : deviceId.data();
-        auto result = ActivateAudioInterfaceAsync(deviceIdData, __uuidof(IAudioClient3), nullptr, this, asyncOperation.put());
-        if (FAILED(result)) {
-            setResult(nullptr);
+    concurrency::task<winrt::com_ptr<::IUnknown>> createAsync(winrt::hstring const& deviceId) {
+        winrt::com_ptr<IActivateAudioInterfaceAsyncOperation> asyncOperation{ nullptr };
+        if (deviceId.empty()) {
+            auto defaultId = MediaDevice::GetDefaultAudioRenderId(AudioDeviceRole::Default);
+            winrt::check_hresult(ActivateAudioInterfaceAsync(defaultId.c_str(), __uuidof(IAudioClient3), nullptr, this, asyncOperation.put()));
         }
+        else {
+            winrt::check_hresult(ActivateAudioInterfaceAsync(deviceId.c_str(), __uuidof(IAudioClient3), nullptr, this, asyncOperation.put()));
+        }
+
+        return concurrency::task<winrt::com_ptr<::IUnknown>>{ activationCompleted };
     }
 
-    HRESULT STDMETHODCALLTYPE ActivateCompleted(IActivateAudioInterfaceAsyncOperation *activateOperation) override {
-        HRESULT activationResult = S_FALSE;
-        winrt::com_ptr<IUnknown> audioInterface{nullptr};
-        activateOperation->GetActivateResult(&activationResult, audioInterface.put());
-        if (SUCCEEDED(activationResult)) {
-            setResult(audioInterface.get());
-        } else {
-            setResult(nullptr);
+    HRESULT STDMETHODCALLTYPE ActivateCompleted(IActivateAudioInterfaceAsyncOperation* activateOperation) override {
+        HRESULT activateResult = S_FALSE;
+        winrt::com_ptr<IUnknown> audioInterface;
+        try
+        {
+            HRESULT hr = activateOperation->GetActivateResult(&activateResult, audioInterface.put());
+            if (FAILED(hr)) {
+                activationCompleted.set_exception(winrt::hresult_error(hr));
+            }
+            else {
+                if (FAILED(activateResult)) {
+                    activationCompleted.set_exception(winrt::hresult_error(activateResult));
+                }
+                else {
+                    activationCompleted.set(audioInterface);
+                }
+            }
         }
+        catch (const std::exception& e)
+        {
+            activationCompleted.set_exception(e);
+        }
+
         return S_OK;
     }
-
-    void setResult(IUnknown *interfacePointer) {
-        this->createdInterface.copy_from(interfacePointer);
-        SetEvent(completionEventHandle);
-    }
-
-    void waitForCompletion() { WaitForSingleObject(completionEventHandle, 30000); }
 };
 
-extern "C" HRESULT wuCreateAudioRenderer(IUnknown **audioRenderer, const char *deviceId) {
-    auto deviceCreator = winrt::make_self<WinrtAudioDeviceCreator>();
-    auto deviceIdHString = winrt::to_hstring(deviceId);
-    deviceCreator->beginCreate(deviceIdHString);
-    deviceCreator->waitForCompletion();
-    if (deviceCreator->createdInterface) {
-        deviceCreator->createdInterface.copy_to(audioRenderer);
+extern "C" HRESULT wuCreateAudioRenderer(IUnknown** audioRenderer, const char* deviceId) {
+    if (!audioRenderer) {
+        return E_POINTER;
+    }
+    *audioRenderer = nullptr;
+
+    try
+    {
+        winrt::hstring deviceIdString;
+        if (deviceId) {
+            deviceIdString = winrt::to_hstring(deviceId);
+        }
+
+        auto deviceCreator = winrt::make_self<WinrtAudioDeviceCreator>();
+        winrt::com_ptr<::IUnknown> audioInterface = deviceCreator->createAsync(deviceIdString).get();
+        audioInterface.copy_to(audioRenderer);
+
         return S_OK;
-    } else {
-        return S_FALSE;
+    }
+    catch (winrt::hresult_error const& e)
+    {
+        return e.code();
+    }
+    catch (std::exception const&)
+    {
+        return winrt::to_hresult();
+    }
+    catch (...)
+    {
+        return E_FAIL;
     }
 }
 
-extern "C" HRESULT wuCreateDefaultAudioRenderer(IUnknown **audioRenderer) { 
-    return wuCreateAudioRenderer(audioRenderer, ""); 
+extern "C" HRESULT wuCreateDefaultAudioRenderer(IUnknown** audioRenderer) {
+    return wuCreateAudioRenderer(audioRenderer, nullptr);
 }
