@@ -1055,17 +1055,21 @@ retry:
     } else {
 #if HAVE_UWP_WASAPI
         MP_VERBOSE(ao, "Trying UWP built-in wrapper.\n");
+
+        IUnknown* res = NULL;
+        if (ao->device) {
+            MP_VERBOSE(ao, "Device: %s\n", ao->device);
+            hr = wuCreateAudioRenderer(&res, ao->device);
+        }
+        else {
+            hr = wuCreateDefaultAudioRenderer(&res);
+        }
 #else
         MP_VERBOSE(ao, "Trying UWP wrapper.\n");
 
         HRESULT(*wuCreateDefaultAudioRenderer)(IUnknown * *res) = NULL;
 
-#if HAVE_UWP
         HANDLE lib = LoadPackagedLibrary(L"wasapiuwp2.dll", 0);
-#else
-        HANDLE lib = LoadLibrary(L"wasapiuwp2.dll");
-#endif
-
         if (!lib) {
             MP_ERR(ao, "Wrapper not found: %d\n", (int)GetLastError());
             return false;
@@ -1077,9 +1081,11 @@ retry:
             MP_ERR(ao, "Function not found.\n");
             return false;
         }
-#endif
-        IUnknown *res = NULL;
+
+        IUnknown* res = NULL;
         hr = wuCreateDefaultAudioRenderer(&res);
+#endif
+
         MP_VERBOSE(ao, "Device: %s %p\n", mp_HRESULT_to_str(hr), res);
         if (FAILED(hr)) {
             MP_FATAL(ao, "Error activating device: %s\n",
