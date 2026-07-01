@@ -15,17 +15,18 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef MP_WIN32_DISPLAYCONFIG_H_
-#define MP_WIN32_DISPLAYCONFIG_H_
+#pragma once
 
-#include <wchar.h>
+#include <libavformat/avio.h>
 
-// Given a GDI monitor device name, get the precise refresh rate using the
-// Windows 7 DisplayConfig API. Returns 0.0 on failure.
-double mp_w32_displayconfig_get_refresh_rate(const wchar_t *device);
+struct bstr;
 
-// Given a GDI monitor device name, get the SDR white level used in HDR mode,
-// in nits, using the Windows 10 DisplayConfig API. Returns 0.0 on failure.
-double mp_w32_displayconfig_get_sdr_white_level(const wchar_t *device);
-
-#endif
+// AES-128-CBC + PKCS#7 decryption layer over `inner`. `key` and `iv` are 16
+// bytes each; other lengths return AVERROR(EINVAL). Neither buffer is retained
+// past this call.
+//
+// The returned wrapper is read-only and non-seekable, and does not own
+// `inner`.
+int mp_avio_crypto_open(AVIOContext **out_pb, AVIOContext *inner,
+                        struct bstr key, struct bstr iv);
+void mp_avio_crypto_close(AVIOContext **pb);

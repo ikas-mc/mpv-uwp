@@ -26,6 +26,7 @@
 #include "osdep/io.h"
 #include "osdep/threads.h"
 #include "osdep/windows_utils.h"
+#include "video/out/win32/displayconfig.h"
 
 #include "d3d11_helpers.h"
 
@@ -684,7 +685,7 @@ static HRESULT create_swapchain_1_2(ID3D11Device *dev, IDXGIFactory2 *factory,
             desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         } else {
             desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-        }     
+        }
 #endif
         desc.BufferCount = opts->length;
     } else {
@@ -1013,6 +1014,8 @@ void mp_dxgi_factory_uninit(struct mp_dxgi_factory_ctx *ctx)
 
     SAFE_RELEASE(ctx->factory);
     SAFE_RELEASE(ctx->last_matched_output);
+    ctx->white_level_monitor = NULL;
+    ctx->sdr_white_level = 0;
 }
 
 #if !HAVE_UWP
@@ -1028,6 +1031,10 @@ bool mp_dxgi_output_desc_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
         return false;
 
     if (!ctx->factory || !IDXGIFactory1_IsCurrent(ctx->factory)) {
+        // This also clears `white_level_monitor`, to invalidate cached value.
+        // While we are using displayconfig API to get reference luminance,
+        // DXGI IsCurrent() is actually tracking reference luminance changes in
+        // settings. There is no window message sent on this change.
         mp_dxgi_factory_uninit(ctx);
         PFN_CREATE_DXGI_FACTORY pCreateDXGIFactory1 = get_CreateDXGIFactory1();
         if (FAILED(pCreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&ctx->factory)))
@@ -1082,12 +1089,11 @@ bool mp_dxgi_output_desc_from_swapchain(struct mp_dxgi_factory_ctx *ctx,
                                         IDXGISwapChain *swapchain,
                                         DXGI_OUTPUT_DESC1 *desc)
 {
+#if !HAVE_UWP
+    DXGI_SWAP_CHAIN_DESC swap_desc;
     // IDXGISwapChain::GetContainingOutput is not used because DXGI cache the
     // output params and doesn't react to the changes. Instead go through the
     // HWND and create a fresh DXGI factory.
-    
-#if !HAVE_UWP
-    DXGI_SWAP_CHAIN_DESC swap_desc;
     if (SUCCEEDED(IDXGISwapChain_GetDesc(swapchain, &swap_desc))) {
         return mp_dxgi_output_desc_from_hwnd(ctx, swap_desc.OutputWindow, desc);
     }
@@ -1096,6 +1102,33 @@ bool mp_dxgi_output_desc_from_swapchain(struct mp_dxgi_factory_ctx *ctx,
     return false;
 }
 
+float mp_dxgi_sdr_white_level_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
+                                        HWND hwnd)
+{
+#if HAVE_WIN32_DESKTOP
+    DXGI_OUTPUT_DESC1 desc;
+    if (!mp_dxgi_output_desc_from_hwnd(ctx, hwnd, &desc))
+        return 0;
+
+    if (ctx && ctx->white_level_monitor == desc.Monitor)
+        return ctx->sdr_white_level;
+
+    MONITORINFOEXW mi = { .cbSize = sizeof(mi) };
+    if (!GetMonitorInfoW(desc.Monitor, (MONITORINFO*)&mi))
+        return 0;
+
+    float white_level = mp_w32_displayconfig_get_sdr_white_level(mi.szDevice);
+
+    if (ctx) {
+        ctx->white_level_monitor = desc.Monitor;
+        ctx->sdr_white_level = white_level;
+    }
+
+    return white_level;
+#else
+    return 0;
+#endif
+}
 
 struct pl_color_space mp_dxgi_desc_to_color_space(const DXGI_OUTPUT_DESC1 *desc)
 {

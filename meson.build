@@ -624,11 +624,12 @@ if darwin
     subdir(join_paths('TOOLS', 'osxbundle'))
 endif
 
-libcurl = dependency('libcurl', version: '>= 7.87.0', required: get_option('libcurl'))
+libcurl = dependency('libcurl', version: '>= 7.88.0', required: get_option('libcurl'))
 features += {'libcurl': libcurl.found()}
 if features['libcurl']
     dependencies += [libcurl]
-    sources += files('stream/stream_curl.c')
+    sources += files('demux/avio_crypto.c',
+                     'stream/stream_curl.c')
 endif
 
 cdda_opt = get_option('cdda').require(
@@ -783,7 +784,10 @@ if features['uchardet']
     dependencies += uchardet
 endif
 
-vapoursynth = dependency('vapoursynth', version: '>= 56', required: get_option('vapoursynth'))
+vapoursynth = dependency('vapoursynth-script', version: '>= 56', required: false)
+if not vapoursynth.found()
+    vapoursynth = dependency('vapoursynth', version: '>= 56', required: get_option('vapoursynth'))
+endif
 features += {'vapoursynth': vapoursynth.found()}
 if features['vapoursynth']
     dependencies += vapoursynth.partial_dependency(compile_args: true, includes: true)
