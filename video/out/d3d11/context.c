@@ -251,9 +251,12 @@ static float d3d11_target_ref_luma(struct ra_swapchain *sw)
 {
     if (sw->ctx->opts.composition)
         return 0;
-
+#if HAVE_UWP
+    return 0;
+#else
     struct priv *p = sw->priv;
     return mp_dxgi_sdr_white_level_from_hwnd(&p->dxgi_ctx, vo_w32_hwnd(sw->ctx->vo));
+#endif
 }
 
 static bool d3d11_start_frame(struct ra_swapchain *sw, struct ra_fbo *out_fbo)
