@@ -676,7 +676,7 @@ static HRESULT create_swapchain_1_2(ID3D11Device *dev, IDXGIFactory2 *factory,
     }
 
     if (opts->window == NULL) {
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown*)dev,
         &desc, NULL, &swapchain1);
     } else {
