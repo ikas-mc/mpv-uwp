@@ -1687,9 +1687,13 @@ static void surface_handle_enter(void *data, struct wl_surface *wl_surface,
     if (outputs == 1)
         update_output_geometry(wl);
 
-    MP_VERBOSE(wl, "Surface entered output %s %s (%s) (0x%x), scale = %f, refresh rate = %f Hz\n",
-               wl->current_output->make, wl->current_output->model, wl->current_output->name,
-               wl->current_output->id, wl->scaling_factor, wl->current_output->refresh_rate);
+    if (wl->current_output) {
+        MP_VERBOSE(wl, "Surface entered output %s %s (%s) (0x%x), scale = %f, refresh rate = %f Hz\n",
+                   wl->current_output->make, wl->current_output->model, wl->current_output->name,
+                   wl->current_output->id, wl->scaling_factor, wl->current_output->refresh_rate);
+    } else {
+        MP_VERBOSE(wl, "Surface entered unknown output\n");
+    }
 
     wl->pending_vo_events |= VO_EVENT_WIN_STATE;
 }
@@ -1777,6 +1781,9 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 static void handle_surface_config(void *data, struct xdg_surface *surface,
                                   uint32_t serial)
 {
+    struct vo_wayland_state *wl = data;
+
+    wl->surface_configured = true;
     xdg_surface_ack_configure(surface, serial);
 }
 
@@ -4105,7 +4112,8 @@ static void update_output_geometry(struct vo_wayland_state *wl)
         force_resize = true;
     }
 
-    if (!mp_rect_equals(&wl->old_output_geometry, &wl->current_output->geometry)) {
+    if (wl->current_output &&
+        !mp_rect_equals(&wl->old_output_geometry, &wl->current_output->geometry)) {
         set_geometry(wl, false);
         force_resize = true;
     }
@@ -4695,11 +4703,18 @@ bool vo_wayland_init(struct vo *vo)
 
     wl->frame_callback = wl_surface_frame(wl->callback_surface);
     wl_callback_add_listener(wl->frame_callback, &frame_listener, wl);
+
+    // Do a commit without any buffer attached to ensure the compositor
+    // configures the surface.
     wl_surface_commit(wl->surface);
 
-    /* Do another roundtrip to ensure all of the above is initialized
-     * before mpv does anything else. */
-    wl_display_roundtrip(wl->display);
+    // Block until the compositor has configured the surface. Since all requests
+    // are processed in order, this also ensures that all requests preceding
+    // the above surface commit have also been seen by the compositor.
+    while (!wl->surface_configured) {
+        if (wl_display_dispatch(wl->display) < 0)
+            goto err;
+    }
 
     return true;
 
