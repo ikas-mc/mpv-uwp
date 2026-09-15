@@ -275,9 +275,11 @@ jobs:
           - os: "macos-14"
             arch: "arm"
             xcode: "Xcode_15.0"
+            homebrew: "b1d3cbaeb724947c97bf0e334adb3db56e4b5438"
           - os: "macos-15"
             arch: "arm"
           - os: "macos-15-intel"
+            homebrew: "956fbd2598f7b0bc3c7ef72edaa622e19415f6c9"
           - os: "macos-26"
             arch: "arm"
           - os: "macos-26"
@@ -306,6 +308,7 @@ jobs:
           if [[ -n "${{ matrix.homebrew }}" ]]; then
             export HOMEBREW_NO_AUTO_UPDATE=1
             cd "$(brew --repo homebrew/core)"
+            git fetch --depth=1 origin ${{ matrix.homebrew }}
             git checkout --force ${{ matrix.homebrew }}
           else
             brew update
@@ -313,7 +316,7 @@ jobs:
           if brew list ffmpeg &> /dev/null; then brew unlink ffmpeg; fi
           brew install -q autoconf automake curl pkgconf libtool python freetype fribidi little-cms2 \
             luajit libass ffmpeg-full meson rust uchardet mujs libplacebo molten-vk vulkan-loader vulkan-headers \
-            libarchive libbluray libcaca libcdio-paranoia libdvdnav rubberband zimg
+            libarchive libbluray libcaca libcdio-paranoia libdvdnav libdvdread rubberband zimg
           brew link ffmpeg-full
 
       - name: Build with meson
@@ -324,6 +327,7 @@ jobs:
           TRAVIS_OS_NAME: "${{ matrix.os }}"
           SWIFT_FLAGS: "${{ matrix.swift }}"
           MACOSX_DEPLOYMENT_TARGET: "${{ matrix.target }}"
+          MACOS_ARCH: "${{ matrix.arch }}"
 
       - name: Create App Bundle
         if: ${{ matrix.arch != 'test' }}
@@ -492,7 +496,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Start OpenBSD VM
-        uses: cross-platform-actions/action@v1.4.0
+        uses: cross-platform-actions/action@v1.5.0
         with:
           operating_system: openbsd
           version: '7.8'
@@ -561,7 +565,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Start FreeBSD VM
-        uses: cross-platform-actions/action@v1.4.0
+        uses: cross-platform-actions/action@v1.5.0
         with:
           operating_system: freebsd
           version: '15.1'
@@ -584,6 +588,7 @@ jobs:
               libcaca \
               libcdio-paranoia \
               libdvdnav \
+              libdvdread \
               libdisplay-info \
               libplacebo \
               libXinerama \
@@ -680,6 +685,7 @@ jobs:
             libass:p
             libcdio-paranoia:p
             libdvdnav:p
+            libdvdread:p
             libjpeg-turbo:p
             libplacebo:p
             lua51:p
