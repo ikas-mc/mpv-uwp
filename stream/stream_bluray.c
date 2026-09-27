@@ -28,6 +28,8 @@
 
 #include <string.h>
 #include <assert.h>
+#include <limits.h>
+#include <string.h>
 
 #include <libbluray/bluray.h>
 #include <libbluray/meta_data.h>
@@ -48,12 +50,15 @@
 #include "osdep/threads.h"
 #include "stream.h"
 #include "osdep/io.h"
+#include "osdep/threads.h"
+#include "osdep/timer.h"
 #include "sub/osd.h"
 #include "sub/img_convert.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
 
 #define BLURAY_SECTOR_SIZE     6144
+#define BLURAY_UDF_BLOCK_SIZE  2048
 
 #define BLURAY_DEFAULT_ANGLE      0
 #define BLURAY_DEFAULT_CHAPTER    0
@@ -120,6 +125,9 @@ struct bluray_priv_s {
     BLURAY *bd;
     struct mp_log *bluray_log;
     bool probing;               // open is an .iso auto-detection probe
+    stream_t *remote_stream;
+    mp_mutex remote_stream_lock;
+    bool remote_stream_lock_initialized;
     BLURAY_TITLE_INFO *title_info;
     int num_titles;
     int current_angle;
@@ -447,6 +455,44 @@ static void bd_argb_overlay_cb(void *handle, const BD_ARGB_OVERLAY *ov)
     mp_mutex_unlock(&priv->overlay_lock);
 }
 
+static bool is_stream_url(const char *device)
+{
+    return strncasecmp(device, "http://", 7) == 0 ||
+           strncasecmp(device, "https://", 8) == 0||
+           strncasecmp(device, "smb3://", 7) == 0||
+           strncasecmp(device, "winrt://", 8) == 0||
+           strncasecmp(device, "stream://", 9) == 0||
+           strncasecmp(device, "file2://", 8) == 0||
+           strncasecmp(device, "ftp://", 6) == 0||
+           strncasecmp(device, "smb://", 6) == 0;
+}
+
+static int remote_read_blocks(void *handle, void *buf, int lba, int num_blocks)
+{
+    struct bluray_priv_s *priv = handle;
+    if (!priv->remote_stream || lba < 0 || num_blocks <= 0 ||
+        num_blocks > INT_MAX / BLURAY_UDF_BLOCK_SIZE)
+    {
+        return -1;
+    }
+
+    int64_t pos = (int64_t)lba * BLURAY_UDF_BLOCK_SIZE;
+    int bytes = num_blocks * BLURAY_UDF_BLOCK_SIZE;
+    int got = -1;
+
+    // libbluray can issue block reads from more than one internal context.
+    // Keep seek + read atomic, matching libbluray's local image adapter.
+    mp_mutex_lock(&priv->remote_stream_lock);
+    if (stream_seek(priv->remote_stream, pos)) {
+        int read = stream_read(priv->remote_stream, buf, bytes);
+        if (read > 0)
+            got = read / BLURAY_UDF_BLOCK_SIZE;
+    }
+    mp_mutex_unlock(&priv->remote_stream_lock);
+
+    return got;
+}
+
 inline static int play_playlist(struct bluray_priv_s *priv, int playlist)
 {
     return bd_select_playlist(priv->bd, playlist);
@@ -471,6 +517,15 @@ static void bluray_stream_close(stream_t *s)
             bd_register_argb_overlay_proc(priv->bd, NULL, NULL, NULL);
         }
         bd_close(priv->bd);
+        priv->bd = NULL;
+    }
+    if (priv->remote_stream) {
+        free_stream(priv->remote_stream);
+        priv->remote_stream = NULL;
+    }
+    if (priv->remote_stream_lock_initialized) {
+        mp_mutex_destroy(&priv->remote_stream_lock);
+        priv->remote_stream_lock_initialized = false;
     }
     mp_mutex_lock(&bluray_log_lock);
     // If we created the global log, unset it.
@@ -1214,9 +1269,39 @@ static int bluray_stream_open_internal(stream_t *s)
     mp_mutex_unlock(&bluray_log_lock);
 
     /* open device */
-    char *device_tmp = mp_get_user_path(NULL, s->global, device);
-    BLURAY *bd = bd_open(device_tmp, NULL);
-    talloc_free(device_tmp);
+    BLURAY *bd = NULL;
+    if (is_stream_url(device)) {
+        b->remote_stream = stream_create(device, STREAM_READ | s->stream_origin,
+                                         s->cancel, s->global);
+        if (!b->remote_stream || !b->remote_stream->seekable) {
+            MP_ERR(s, "Remote Blu-ray image is not seekable; the server must "
+                      "support HTTP byte ranges.\n");
+            ret = STREAM_UNSUPPORTED;
+            goto err;
+        }
+
+        int64_t size = stream_get_size(b->remote_stream);
+        if (size < BLURAY_UDF_BLOCK_SIZE || size % BLURAY_UDF_BLOCK_SIZE) {
+            MP_ERR(s, "Remote Blu-ray image has no stable block-aligned size.\n");
+            ret = STREAM_UNSUPPORTED;
+            goto err;
+        }
+
+        mp_mutex_init(&b->remote_stream_lock);
+        b->remote_stream_lock_initialized = true;
+        bd = bd_init();
+        if (bd && !bd_open_stream(bd, b, remote_read_blocks)) {
+            bd_close(bd);
+            bd = NULL;
+        }
+        if (bd)
+            MP_INFO(s, "Opened seekable remote Blu-ray image (%" PRId64 " bytes).\n",
+                    size);
+    } else {
+        char *device_tmp = mp_get_user_path(NULL, s->global, device);
+        bd = bd_open(device_tmp, NULL);
+        talloc_free(device_tmp);
+    }
     if (!bd) {
         if (!b->probing)
             MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
