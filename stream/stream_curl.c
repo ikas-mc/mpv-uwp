@@ -178,6 +178,8 @@ struct priv {
     int retry_count;           // consecutive failed attempts at request_start
     bool active;               // handle is currently active in the multi
     bool finished;             // current request has reached EOF
+    int64_t reply_end;         // inclusive end of the reply's byte range, -1 if none
+    bool reply_rejected;       // reply is unusable, its body is dropped
 
     // Probe state. Set on the curl thread read by curl_open after.
     bool probed;
@@ -383,7 +385,7 @@ static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdat
 
     // header_callback validated the response and logged any error status,
     // we don't care about error body.
-    if (!p->stream_ok)
+    if (!p->stream_ok || p->reply_rejected)
         return CURL_WRITEFUNC_ERROR;
 
     if (atomic_load_explicit(&p->aborted, memory_order_relaxed))
@@ -425,9 +427,12 @@ static const char *header_value(CURL *c, const char *name)
     return NULL;
 }
 
-static void parse_content_range(CURL *c, int64_t *out_start, int64_t *out_total)
+// "bytes <start>-<end>/<total>", where <total> is "*" if unknown, or
+// "bytes */<total>" on a 416 reply. Absent or unparsable fields are -1.
+static void parse_content_range(CURL *c, int64_t *out_start, int64_t *out_end,
+                                int64_t *out_total)
 {
-    *out_start = *out_total = -1;
+    *out_start = *out_end = *out_total = -1;
     const char *value = header_value(c, "Content-Range");
     if (!value)
         return;
@@ -439,12 +444,15 @@ static void parse_content_range(CURL *c, int64_t *out_start, int64_t *out_total)
     if (rest.len == 0 && v > 0)
         *out_total = v;
     bstr_eatstart0(&range, "bytes");
-    bstr start;
-    if (!bstr_split_tok(bstr_lstrip(range), "-", &start, &(bstr){0}))
+    bstr start, end;
+    if (!bstr_split_tok(bstr_lstrip(range), "-", &start, &end))
         return;
     v = bstrtoll(start, &rest, 10);
     if (start.len > 0 && rest.len == 0 && v >= 0)
         *out_start = v;
+    v = bstrtoll(end, &rest, 10);
+    if (end.len > 0 && rest.len == 0 && v >= 0)
+        *out_end = v;
 }
 
 static void finalize_probe(struct priv *p)
@@ -465,13 +473,44 @@ static void finalize_probe(struct priv *p)
     mp_mutex_unlock(&p->mtx);
 }
 
+static void check_http_reply(struct priv *p, long resp, int64_t range_start,
+                             int64_t range_total)
+{
+    if (resp == 416 && p->content_size < 0) {
+        // The request started past the end of a file of unknown size, so this
+        // is EOF. The reply tells the size if the server knows it by now.
+        if (range_total > 0 && range_total <= p->request_start) {
+            mp_mutex_lock(&p->mtx);
+            p->content_size = range_total;
+            mp_mutex_unlock(&p->mtx);
+        }
+        p->finished = true;
+        p->reply_rejected = true;
+        return;
+    }
+    if (!is_http_success(resp)) {
+        MP_ERR(p, "HTTP error %ld\n", resp);
+        p->reply_rejected = true;
+        return;
+    }
+    int64_t start = resp == 206 ? range_start : 0;
+    if (start != p->request_start) {
+        MP_ERR(p, "Server sent back unexpected reply with offset %" PRId64
+               " (expected %" PRIu64 ")\n", start, p->request_start);
+        p->reply_rejected = true;
+    }
+}
+
 // Empty line is the end of the header. Skip intermediate 1xx and 3xx responses,
 // we care about the final one.
-static void probe_http(struct priv *p, struct bstr line)
+static void on_http_header(struct priv *p, struct bstr line)
 {
     if (line.len > 0) {
-        // A new status line resets per-response state so that intermediate
-        // 1xx/3xx responses don't leak ICY metadata into the final one.
+        // ICY metadata is set up from the initial reply only. A new status line
+        // resets per-response state so that intermediate 1xx/3xx responses
+        // don't leak ICY metadata into the final one.
+        if (p->probed)
+            return;
         mp_mutex_lock(&p->mtx);
         if (bstr_startswith0(line, "HTTP/")) {
             mp_icy_reset(p->icy);
@@ -487,13 +526,19 @@ static void probe_http(struct priv *p, struct bstr line)
     if (resp < 200 || (resp >= 300 && resp < 400))
         return;
 
+    int64_t range_start, range_end, range_total;
+    parse_content_range(p->curl, &range_start, &range_end, &range_total);
+    p->reply_end = resp == 206 ? range_end : -1;
+
+    if (p->probed) {
+        check_http_reply(p, resp, range_start, range_total);
+        return;
+    }
+
     if (!is_http_success(resp)) {
         MP_ERR(p, "HTTP error %ld\n", resp);
         goto done;
     }
-
-    int64_t range_start, range_total;
-    parse_content_range(p->curl, &range_start, &range_total);
 
     // A request with an explicit start offset must be honored by the server
     if (p->start_offset > 0 && range_start != p->start_offset) {
@@ -564,13 +609,13 @@ static size_t header_callback(char *buffer, size_t size, size_t nitems, void *us
     struct priv *p = userdata;
     size_t bytes = size * nitems;
 
-    if (p->probed)
+    if (p->probed && p->scheme->proto != MP_CURL_PROTO_HTTP)
         return bytes;
 
     struct bstr line = bstr_strip_linebreaks((bstr){buffer, bytes});
     switch (p->scheme->proto) {
     case MP_CURL_PROTO_HTTP:
-        probe_http(p, line);
+        on_http_header(p, line);
         break;
     case MP_CURL_PROTO_FTP:
         probe_ftp(p, line);
@@ -618,6 +663,24 @@ static bool is_recoverable_error(CURLcode code)
     }
 }
 
+static bool check_setopt(struct priv *p, const char *name, CURLcode res)
+{
+    if (res == CURLE_OK)
+        return true;
+    MP_ERR(p, "Failed to set %s: %s\n", name, curl_easy_strerror(res));
+    return false;
+}
+
+// The request could not be started. This also ends the probe in curl_open().
+static void request_failed(struct priv *p)
+{
+    mp_mutex_lock(&p->mtx);
+    p->probed = true;
+    p->stream_error = true;
+    mp_cond_broadcast(&p->cond);
+    mp_mutex_unlock(&p->mtx);
+}
+
 static void start_request(struct priv *p)
 {
     if (p->finished) {
@@ -645,7 +708,7 @@ static void start_request(struct priv *p)
         return;
     }
 
-    char range[64];
+    char range[64], *range_arg = NULL;
     if (chunked || capped) {
         uint64_t end = UINT64_MAX;
         if (chunked)
@@ -655,17 +718,28 @@ static void start_request(struct priv *p)
         if (capped)
             end = MPMIN(end, p->request_end - 1);
         snprintf(range, sizeof(range), "%" PRIu64 "-%" PRIu64, start, end);
-        curl_easy_setopt(p->curl, CURLOPT_RANGE, range);
+        range_arg = range;
     } else if (ranged) {
         snprintf(range, sizeof(range), "%" PRIu64 "-", start);
-        curl_easy_setopt(p->curl, CURLOPT_RANGE, range);
-    } else {
-        curl_easy_setopt(p->curl, CURLOPT_RANGE, NULL);
+        range_arg = range;
+    }
+    if (!check_setopt(p, "CURLOPT_RANGE",
+                      curl_easy_setopt(p->curl, CURLOPT_RANGE, range_arg)))
+    {
+        request_failed(p);
+        return;
     }
 
     p->request_received = 0;
+    p->reply_end = -1;
+    p->reply_rejected = false;
+    CURLMcode mres = curl_multi_add_handle(p->ctx->multi, p->curl);
+    if (mres != CURLM_OK) {
+        MP_ERR(p, "Failed to start the request: %s\n", curl_multi_strerror(mres));
+        request_failed(p);
+        return;
+    }
     p->active = true;
-    curl_multi_add_handle(p->ctx->multi, p->curl);
 }
 
 static void log_curl_error(struct priv *p, const char *what, CURLcode code)
@@ -702,13 +776,30 @@ static void on_done(struct priv *p, CURLcode code)
     p->request_start += p->request_received;
     p->request_received = 0;
 
+    if (p->reply_rejected && !aborted) {
+        // The reply check cut the transfer short, so the curl result means
+        // nothing. This is either the end of a file of unknown size or an
+        // error that was logged already.
+        mp_mutex_lock(&p->mtx);
+        if (p->finished) {
+            p->stream_eof = true;
+        } else {
+            p->stream_error = true;
+        }
+        mp_cond_broadcast(&p->cond);
+        mp_mutex_unlock(&p->mtx);
+        return;
+    }
+
     if (code == CURLE_OK && !aborted) {
         p->retry_count = 0;
 
-        bool chunked = p->seekable && p->opts->max_request_size > 0;
+        // A reply may end before the requested range does: servers cap their
+        // replies, and with an unknown file size only a 416 marks the end.
+        // Keep requesting from where this reply stopped.
         bool past_size = p->content_size > 0 && p->request_start >= p->content_size;
         bool past_end = p->request_end > 0 && p->request_start >= p->request_end;
-        if (chunked && !past_size && !past_end) {
+        if (p->seekable && p->reply_end >= 0 && !past_size && !past_end) {
             start_request(p);
             return;
         }
@@ -756,78 +847,93 @@ static void on_cancel(void *ctx)
 
 // Configuration and initial setup
 
+static struct curl_slist *slist_append(struct curl_slist *list, const char *str)
+{
+    list = curl_slist_append(list, str);
+    MP_HANDLE_OOM(list);
+    return list;
+}
+
 static struct curl_slist *build_header_list(struct priv *p)
 {
     struct curl_slist *list = NULL;
     if (p->net_opts->referrer && p->net_opts->referrer[0]) {
         char *h = talloc_asprintf(NULL, "Referer: %s", p->net_opts->referrer);
-        list = curl_slist_append(list, h);
+        list = slist_append(list, h);
         talloc_free(h);
     }
     if (p->net_opts->http_header_fields) {
         for (int i = 0; p->net_opts->http_header_fields[i]; i++)
-            list = curl_slist_append(list, p->net_opts->http_header_fields[i]);
+            list = slist_append(list, p->net_opts->http_header_fields[i]);
     }
     if (p->scheme->proto == MP_CURL_PROTO_HTTP)
-        list = curl_slist_append(list, "Icy-MetaData: 1");
+        list = slist_append(list, "Icy-MetaData: 1");
     return list;
 }
 
-static void setup_curl(struct priv *p)
+#define SETOPT(opt, val)                                                    \
+    do {                                                                    \
+        if (!check_setopt(p, #opt, curl_easy_setopt(c, opt, val)))          \
+            return false;                                                   \
+    } while (0)
+
+static bool setup_curl(struct priv *p)
 {
+    curl_version_info_data *info = curl_version_info(CURLVERSION_NOW);
     CURL *c = p->curl;
 
-    curl_easy_setopt(c, CURLOPT_URL, p->url);
-    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(c, CURLOPT_PRIVATE, p);
+    SETOPT(CURLOPT_URL, p->url);
+    SETOPT(CURLOPT_NOSIGNAL, 1L);
+    SETOPT(CURLOPT_PRIVATE, p);
 
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, p);
-    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, header_callback);
-    curl_easy_setopt(c, CURLOPT_HEADERDATA, p);
+    SETOPT(CURLOPT_WRITEFUNCTION, write_callback);
+    SETOPT(CURLOPT_WRITEDATA, p);
+    SETOPT(CURLOPT_HEADERFUNCTION, header_callback);
+    SETOPT(CURLOPT_HEADERDATA, p);
     // enable progress callback, so we can cancel transfer at any point
-    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xferinfo_callback);
-    curl_easy_setopt(c, CURLOPT_XFERINFODATA, p);
+    SETOPT(CURLOPT_NOPROGRESS, 0L);
+    SETOPT(CURLOPT_XFERINFOFUNCTION, xferinfo_callback);
+    SETOPT(CURLOPT_XFERINFODATA, p);
 
     // Enable verbose output with trace level logging.
-    curl_easy_setopt(c, CURLOPT_VERBOSE, mp_msg_test(p->log, MSGL_TRACE) ? 1L : 0L);
-    curl_easy_setopt(c, CURLOPT_DEBUGFUNCTION, debug_callback);
-    curl_easy_setopt(c, CURLOPT_DEBUGDATA, p);
+    SETOPT(CURLOPT_VERBOSE, mp_msg_test(p->log, MSGL_TRACE) ? 1L : 0L);
+    SETOPT(CURLOPT_DEBUGFUNCTION, debug_callback);
+    SETOPT(CURLOPT_DEBUGDATA, p);
 
     bool identity = p->start_offset > 0 || p->request_end > 0;
-    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, identity ? "identity" : "");
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_MAXREDIRS, (long)p->opts->max_redirects);
-    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, (long)p->opts->http_version);
-    curl_easy_setopt(c, CURLOPT_HSTS_CTRL, (long)CURLHSTS_ENABLE);
-    curl_easy_setopt(c, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT_MS,
-                     (long)(p->opts->connect_timeout * 1000));
+    SETOPT(CURLOPT_ACCEPT_ENCODING, identity ? "identity" : "");
+    SETOPT(CURLOPT_FOLLOWLOCATION, 1L);
+    SETOPT(CURLOPT_MAXREDIRS, (long)p->opts->max_redirects);
+    SETOPT(CURLOPT_HTTP_VERSION, (long)p->opts->http_version);
+    if (info->features & CURL_VERSION_HSTS)
+        SETOPT(CURLOPT_HSTS_CTRL, (long)CURLHSTS_ENABLE);
+    SETOPT(CURLOPT_TCP_KEEPALIVE, 1L);
+    SETOPT(CURLOPT_CONNECTTIMEOUT_MS, (long)(p->opts->connect_timeout * 1000));
 
     if (p->net_opts->useragent && p->net_opts->useragent[0])
-        curl_easy_setopt(c, CURLOPT_USERAGENT, p->net_opts->useragent);
+        SETOPT(CURLOPT_USERAGENT, p->net_opts->useragent);
     if (p->net_opts->http_proxy && p->net_opts->http_proxy[0])
-        curl_easy_setopt(c, CURLOPT_PROXY, p->net_opts->http_proxy);
+        SETOPT(CURLOPT_PROXY, p->net_opts->http_proxy);
 
-    curl_easy_setopt(c, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);
-    curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, p->net_opts->tls_verify ? 1L : 0L);
-    curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, p->net_opts->tls_verify ? 2L : 0L);
+    if (info->features & CURL_VERSION_SSL)
+        SETOPT(CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);
+    SETOPT(CURLOPT_SSL_VERIFYPEER, p->net_opts->tls_verify ? 1L : 0L);
+    SETOPT(CURLOPT_SSL_VERIFYHOST, p->net_opts->tls_verify ? 2L : 0L);
     if (p->net_opts->tls_ca_file) {
         char *path = mp_get_user_path(p, p->global, p->net_opts->tls_ca_file);
-        curl_easy_setopt(c, CURLOPT_CAINFO, path);
+        SETOPT(CURLOPT_CAINFO, path);
     }
     if (p->net_opts->tls_cert_file) {
         char *path = mp_get_user_path(p, p->global, p->net_opts->tls_cert_file);
-        curl_easy_setopt(c, CURLOPT_SSLCERT, path);
+        SETOPT(CURLOPT_SSLCERT, path);
     }
     if (p->net_opts->tls_key_file) {
         char *path = mp_get_user_path(p, p->global, p->net_opts->tls_key_file);
-        curl_easy_setopt(c, CURLOPT_SSLKEY, path);
+        SETOPT(CURLOPT_SSLKEY, path);
     }
 
     if (p->net_opts->cookies_enabled) {
-        curl_easy_setopt(c, CURLOPT_COOKIEFILE, "");
+        SETOPT(CURLOPT_COOKIEFILE, "");
         char *file = p->net_opts->cookies_file;
         if (file && file[0]) {
             void *tmp = talloc_new(NULL);
@@ -836,21 +942,28 @@ static void setup_curl(struct priv *p)
                 STREAM_READ_FILE_FLAGS_DEFAULT & ~STREAM_LOCAL_FS_ONLY,
                 p->global, 1000000);
             bstr buf = data;
-            while (buf.len) {
+            bool ok = true;
+            while (ok && buf.len) {
                 bstr line = bstr_strip_linebreaks(bstr_getline(buf, &buf));
                 if (!line.len)
                     continue;
                 char *line_str = bstrto0(tmp, line);
-                curl_easy_setopt(c, CURLOPT_COOKIELIST, line_str);
+                ok = check_setopt(p, "CURLOPT_COOKIELIST",
+                                  curl_easy_setopt(c, CURLOPT_COOKIELIST, line_str));
             }
             talloc_free(tmp);
+            if (!ok)
+                return false;
         }
     }
 
     p->headers = build_header_list(p);
     if (p->headers)
-        curl_easy_setopt(c, CURLOPT_HTTPHEADER, p->headers);
+        SETOPT(CURLOPT_HTTPHEADER, p->headers);
+    return true;
 }
+
+#undef SETOPT
 
 // stream_curl implementation
 
@@ -900,7 +1013,10 @@ static int curl_seek(struct stream *s, int64_t pos)
 static int64_t curl_get_size(struct stream *s)
 {
     struct priv *p = s->priv;
-    return p->content_size;
+    mp_mutex_lock(&p->mtx);
+    int64_t size = p->content_size;
+    mp_mutex_unlock(&p->mtx);
+    return size;
 }
 
 static int curl_control(struct stream *s, int cmd, void *arg)
@@ -999,7 +1115,8 @@ static int curl_open(stream_t *s, const struct stream_open_args *args)
         return STREAM_ERROR;
     }
 
-    setup_curl(p);
+    if (!setup_curl(p))
+        return STREAM_ERROR;
     mp_cancel_set_cb(s->cancel, on_cancel, p);
 
     cmd_sync(p, CMD_ADD, 0, false);
