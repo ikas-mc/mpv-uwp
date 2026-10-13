@@ -236,6 +236,7 @@ sources = files(
     'video/out/dither.c',
     'video/out/dr_helper.c',
     'video/out/filter_kernels.c',
+    'video/out/terminal_swapchain.c',
     'video/out/gpu/context.c',
     'video/out/gpu/error_diffusion.c',
     'video/out/gpu/hwdec.c',
@@ -1341,7 +1342,7 @@ vulkan_opt = get_option('vulkan').require(
     error_message: 'libplacebo compiled without vulkan support!',
 )
 # libplacebo/ffmpeg public headers depend on Vulkan 1.3
-vulkan = dependency('vulkan', version: '>= 1.3.238', required: vulkan_opt)
+vulkan = dependency('vulkan', version: '>= 1.4.309', required: vulkan_opt)
 features += {'vulkan': vulkan.found() and (vulkan.type_name() == 'internal' or
                        cc.has_header_symbol('vulkan/vulkan_core.h',
                                             'VK_VERSION_1_3',

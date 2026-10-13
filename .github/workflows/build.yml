@@ -334,20 +334,19 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: "macos-14"
-            arch: "arm"
-            xcode: "Xcode_15.0"
-            homebrew: "b1d3cbaeb724947c97bf0e334adb3db56e4b5438"
           - os: "macos-15"
-            arch: "arm"
+            target-os: "macos-15-arm"
           - os: "macos-15-intel"
+            target-os: "macos-15-intel"
             homebrew: "956fbd2598f7b0bc3c7ef72edaa622e19415f6c9"
           - os: "macos-26"
-            arch: "arm"
+            target-os: "macos-26-arm"
           - os: "macos-26"
-            arch: "test"
+            target-os: "test"
             swift: "-target arm64-apple-macosx10.15"
             target: "10.15"
+          - os: "xcode-27"
+            target-os: "macos-27-arm"
     steps:
       - uses: actions/checkout@v7
 
@@ -379,7 +378,7 @@ jobs:
           if brew list openssl@1.1 &> /dev/null; then brew rm openssl@1.1; fi
           brew install -q autoconf automake curl pkgconf libtool python freetype fribidi little-cms2 \
             luajit libass ffmpeg-full meson rust uchardet mujs libplacebo molten-vk vulkan-loader vulkan-headers \
-            libarchive libbluray libcaca libcdio-paranoia libdvdnav libdvdread rubberband vapoursynth zimg
+            libarchive libbluray libcaca libcdio-paranoia libdvdnav libdvdread libsixel rubberband vapoursynth zimg
           brew link ffmpeg-full
 
       - name: Build with meson
@@ -390,10 +389,10 @@ jobs:
           TRAVIS_OS_NAME: "${{ matrix.os }}"
           SWIFT_FLAGS: "${{ matrix.swift }}"
           MACOSX_DEPLOYMENT_TARGET: "${{ matrix.target }}"
-          MACOS_ARCH: "${{ matrix.arch }}"
+          MACOS_TARGET_OS: "${{ matrix.target-os }}"
 
       - name: Create App Bundle
-        if: ${{ matrix.arch != 'test' }}
+        if: ${{ matrix.target-os != 'test' }}
         run: |
           meson compile -C build macos-bundle
           tar -czvf mpv.tar.gz -C build mpv.app
@@ -418,12 +417,11 @@ jobs:
         run: |
           VERSION_FILE=$(find . -path "*/common/version.h" -type f | head -n 1)
           VER=$(grep VERSION "$VERSION_FILE" | cut -d'"' -f2)
-          TARGET=${{ matrix.os }}${{ matrix.arch != '' && format('-{0}', matrix.arch) || '' }}
           PR=${{ github.event.pull_request.number && format('-pr{0}', github.event.pull_request.number) || '' }}
-          echo "name=mpv-$VER$PR-${{ github.run_id }}-$TARGET" >> "$GITHUB_OUTPUT"
+          echo "name=mpv-$VER$PR-${{ github.run_id }}-${{matrix.target-os}}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
-        if: ${{ matrix.arch != 'test' }}
+        if: ${{ matrix.target-os != 'test' }}
         with:
           name: ${{ steps.artifact.outputs.name }}
           path: mpv.tar.gz
@@ -516,6 +514,7 @@ jobs:
               lua5.2-dev \
               pulseaudio-dev \
               libplacebo-dev \
+              libsixel-dev \
               libx11-dev \
               libxfixes-dev \
               libxkbcommon-dev \
@@ -579,6 +578,7 @@ jobs:
               libdvdnav \
               libiconv \
               libplacebo \
+              libsixel \
               libv4l \
               libxkbcommon \
               luajit \
@@ -654,6 +654,7 @@ jobs:
               libdvdread \
               libdisplay-info \
               libplacebo \
+              libsixel \
               libXinerama \
               libxkbcommon \
               libXpresent \
@@ -715,8 +716,6 @@ jobs:
           - sys: "clang64"
             os: "windows-2025"
             auto-var-init: "pattern"
-          - sys: "mingw64"
-            os: "windows-2025"
           - sys: "ucrt64"
             os: "windows-2025"
           - sys: "clangarm64"
