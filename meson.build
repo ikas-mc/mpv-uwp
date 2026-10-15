@@ -191,6 +191,7 @@ sources = files(
     'stream/cookies.c',
     'stream/network.c',
     'stream/stream.c',
+    'stream/stream_aes_ctr.c',
     'stream/stream_avdevice.c',
     'stream/stream_cb.c',
     'stream/stream_concat.c',
@@ -740,11 +741,11 @@ endif
 lua = dependency('', required: false)
 lua_opt = get_option('lua')
 if lua_opt != 'disabled'
-    lua_version = [['lua', ['>=5.1.0', '<5.3.0']], # generic lua.pc
+    lua_version = [['luajit', '>= 2.0.0'],
+                   ['lua', ['>=5.1.0', '<5.3.0']], # generic lua.pc
                    ['lua52', '>= 5.2.0'],
                    ['lua5.2', '>= 5.2.0'],
                    ['lua-5.2', '>= 5.2.0'],
-                   ['luajit', '>= 2.0.0'],
                    ['lua51', '>= 5.1.0'],
                    ['lua5.1', '>= 5.1.0'],
                    ['lua-5.1', '>= 5.1.0']]
@@ -1846,11 +1847,9 @@ if get_option('libmpv')
                  description: 'mpv media player client library')
 
     headers = ['include/mpv/client.h', 'include/mpv/render.h',
-               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h']
+               'include/mpv/render_d3d11.h', 'include/mpv/render_gl.h',
+               'include/mpv/stream_cb.h']
 
- if features['d3d11']
-    headers += 'include/mpv/render_dxgi.h'
- endif
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv

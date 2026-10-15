@@ -184,6 +184,8 @@ static int render(struct render_backend *ctx, mpv_render_param *params,
 
     int depth = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_DEPTH,
                                              &(int){0});
+    if (!depth)
+        depth = tex->params.format->component_depth[0];
     gl_video_set_fb_depth(p->renderer, depth);
 
     bool flip = *(int *)get_mpv_render_param(params, MPV_RENDER_PARAM_FLIP_Y,
