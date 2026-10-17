@@ -504,8 +504,10 @@ static void hotplug_uninit(struct ao *ao)
 {
 #if !HAVE_UWP
     MP_DBG(ao, "Hotplug uninit\n");
+    struct wasapi_state *state = ao->priv;
     wasapi_change_uninit(ao);
-    CoUninitialize();
+    if (state->hotplug_mta)
+        CoDecrementMTAUsage(state->hotplug_mta);
 #endif
 }
 
@@ -515,9 +517,9 @@ static int hotplug_init(struct ao *ao)
     MP_DBG(ao, "Hotplug init\n");
     struct wasapi_state *state = ao->priv;
     state->log = ao->log;
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
-
-    HRESULT hr = wasapi_change_init(ao, true);
+    HRESULT hr = CoIncrementMTAUsage(&state->hotplug_mta);
+    EXIT_ON_ERROR(hr);
+    hr = wasapi_change_init(ao, true);
     EXIT_ON_ERROR(hr);
 
     return 0;

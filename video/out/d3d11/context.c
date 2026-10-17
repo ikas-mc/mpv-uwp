@@ -86,7 +86,8 @@ const struct m_sub_options d3d11_conf = {
             {"bt.2020", DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020}),
             .flags = UPDATE_VO,
         },
-        {"d3d11-exclusive-fs", OPT_BOOL(exclusive_fs)},
+        {"d3d11-exclusive-fs", OPT_BOOL(exclusive_fs),
+            .flags = UPDATE_BUILTIN_SCRIPTS},
         {"d3d11-output-mode", OPT_CHOICE(output_mode,
             {"auto", -1},
             {"window", 0},
@@ -119,6 +120,7 @@ struct priv {
     ID3D11Device *device;
     IDXGISwapChain *swapchain;
     struct pl_color_space swapchain_csp;
+    BOOL fullscreen_state;
 
     int64_t perf_freq;
     unsigned last_sync_refresh_count;
@@ -192,7 +194,7 @@ static bool d3d11_reconfig(struct ra_ctx *ctx)
 #if HAVE_UWP
 	if (ctx->opts.composition)
         update_composition_size(ctx);
-#else     
+#else
     if (ctx->opts.composition) {
         vo_w32_composition_size(ctx->vo);
     } else {
@@ -318,7 +320,21 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
     QueryPerformanceCounter(&perf_count);
     p->last_submit_qpc = perf_count.QuadPart;
 
-    IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
+    HRESULT hr = IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
+    if (hr == S_OK)
+        return;
+
+    // DXGI leaves exclusive fullscreen by itself during Present(), e.g. when the
+    // window loses the focus, and returns a status then. The buffers must be
+    // resized after that, or the next Present() fails.
+    BOOL fullscreen = FALSE;
+    IDXGISwapChain_GetFullscreenState(p->swapchain, &fullscreen, NULL);
+    if (fullscreen != p->fullscreen_state) {
+        MP_VERBOSE(sw->ctx, "Full-screen exclusive mode was %s by DXGI\n",
+                   fullscreen ? "enabled" : "disabled");
+        p->fullscreen_state = fullscreen;
+        resize(sw->ctx);
+    }
 }
 
 static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
@@ -438,6 +454,7 @@ static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
                                            enable_exclusive_fs, NULL);
     if (FAILED(hr))
         return false;
+    p->fullscreen_state = enable_exclusive_fs;
 
     if (!resize(ctx))
         return false;
@@ -497,6 +514,16 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
     if (*events & VO_EVENT_RESIZE) {
         if (!resize(ctx))
             return VO_ERROR;
+    }
+
+    if (!ctx->opts.composition && (*events & VO_EVENT_FOCUS) &&
+        !p->fullscreen_state && p->vo_opts->fullscreen && p->opts->exclusive_fs)
+    {
+        bool focused = false;
+        int focus_events = 0;
+        vo_w32_control(ctx->vo, &focus_events, VOCTRL_GET_FOCUSED, &focused);
+        if (focused)
+            d3d11_set_fullscreen(ctx);
     }
 
     return ret;
@@ -635,7 +662,7 @@ static bool d3d11_init(struct ra_ctx *ctx)
 #else
         //TODO
         ctx->vo->display_swapchain = p->swapchain;
-#endif    
+#endif
     }
 
     return true;
@@ -650,7 +677,7 @@ static void d3d11_update_render_opts(struct ra_ctx *ctx)
         return;
 #if !HAVE_UWP
     vo_w32_set_transparency(ctx->vo, ctx->opts.want_alpha);
-#endif 
+#endif
 }
 
 IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
