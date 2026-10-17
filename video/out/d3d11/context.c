@@ -515,7 +515,8 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
         if (!resize(ctx))
             return VO_ERROR;
     }
-
+    
+#if !HAVE_UWP
     if (!ctx->opts.composition && (*events & VO_EVENT_FOCUS) &&
         !p->fullscreen_state && p->vo_opts->fullscreen && p->opts->exclusive_fs)
     {
@@ -525,6 +526,7 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
         if (focused)
             d3d11_set_fullscreen(ctx);
     }
+#endif
 
     return ret;
 }
