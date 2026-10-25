@@ -1790,8 +1790,17 @@ Miscellaneous Commands
     popup
         Show / dismiss the Blu-ray popup menu. For DVDs, falls back to the
         chapter menu where available.
+    audio-menu, sub-menu, angle-menu
+        Jump to the disc's audio, subtitle or angle menu. DVD only, discs are
+        not required to have them and nothing happens when they do not.
+    up-menu
+        Play the "go up" program chain the disc authored for the current
+        position, which usually leads to a higher level menu. DVD only, and
+        nothing happens when the disc did not author one.
     prev
         Return from a menu to playback, or to the previous menu domain.
+    red, green, yellow, blue
+        Send a colored remote key. Blu-ray only.
     mouse-move
         Forward a mouse position to the disc, so it can update the focused
         button under the cursor. With no ``<x> <y>`` arguments, the position
@@ -3494,11 +3503,11 @@ Property list
         ``yes``/true if the ``playlist-current-pos`` property points to this
         entry, ``no``/false or unavailable otherwise.
 
-    ``playlist/N/title``
+    ``playlist/N/title`` (RW)
         Name of the Nth entry. Available if the playlist file contains
         such fields and mpv's parser supports it for the given
         playlist format, or if the playlist entry has been opened before and a
-        media-title other than filename has been acquired.
+        media-title other than filename has been acquired, or if set by the user.
 
     ``playlist/N/id``
         Unique ID for this entry. This is an automatically assigned integer ID
