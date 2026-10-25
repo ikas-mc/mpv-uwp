@@ -20,6 +20,7 @@
 #include "osdep/timer.h"
 #include "osdep/windows_utils.h"
 
+#include "video/csputils.h"
 #include "video/out/gpu/context.h"
 #include "video/out/gpu/d3d11_helpers.h"
 #include "video/out/gpu/spirv.h"
@@ -41,7 +42,25 @@ struct d3d11_opts {
     int color_space;
     bool exclusive_fs;
     int output_mode;
+    int composition_prim;
+    char *composition_gamut;
+    int composition_trc;
+    float composition_max_luma;
+    float composition_min_luma;
+    float composition_max_fall;
+    float composition_sdr_white;
 };
+
+static OPT_STRING_VALIDATE_FUNC(validate_d3d11_composition_gamut);
+
+static int validate_d3d11_composition_gamut(struct mp_log *log,
+                                            const m_option_t *opt,
+                                            struct bstr name,
+                                            const char **value)
+{
+    struct pl_raw_primaries tmp;
+    return mp_parse_raw_primaries(log, *value, &tmp);
+}
 
 #define OPT_BASE_STRUCT struct d3d11_opts
 const struct m_sub_options d3d11_conf = {
@@ -94,6 +113,21 @@ const struct m_sub_options d3d11_conf = {
             {"composition", 1}),
             .flags = UPDATE_VO,
         },
+        {"d3d11-composition-prim", OPT_CHOICE_C(composition_prim,
+                                                pl_csp_prim_names)},
+        {"d3d11-composition-gamut",
+            OPT_STRING_VALIDATE(composition_gamut,
+                                validate_d3d11_composition_gamut)},
+        {"d3d11-composition-trc", OPT_CHOICE_C(composition_trc,
+                                               pl_csp_trc_names)},
+        {"d3d11-composition-max-luma", OPT_FLOAT(composition_max_luma),
+            M_RANGE(0, 10000)},
+        {"d3d11-composition-min-luma", OPT_FLOAT(composition_min_luma),
+            M_RANGE(0, 10000)},
+        {"d3d11-composition-max-fall", OPT_FLOAT(composition_max_fall),
+            M_RANGE(0, 10000)},
+        {"d3d11-composition-sdr-white", OPT_FLOAT(composition_sdr_white),
+            M_RANGE(0, 10000)},
         {0}
     },
     .defaults = &(const struct d3d11_opts) {
@@ -209,11 +243,43 @@ static int d3d11_color_depth(struct ra_swapchain *sw)
     return MPMIN(ra_fmt->component_depth[0], desc1.BitsPerColor);
 }
 
+static struct pl_color_space
+d3d11_composition_display_color_space(struct ra_swapchain *sw)
+{
+    struct priv *p = sw->priv;
+    m_config_cache_update(p->opts_cache);
+
+    const struct d3d11_opts *opts = p->opts;
+    struct pl_color_space ret = {0};
+
+    ret.hdr.max_luma = opts->composition_max_luma;
+    ret.hdr.min_luma = opts->composition_min_luma;
+    ret.hdr.max_fall = opts->composition_max_fall;
+
+    if (opts->composition_gamut)
+        mp_parse_raw_primaries(mp_null_log, opts->composition_gamut,
+                               &ret.hdr.prim);
+
+    ret.primaries = opts->composition_prim;
+    ret.transfer = opts->composition_trc;
+
+    if (!pl_color_transfer_is_hdr(ret.transfer)) {
+        // Don't use reported display peak in SDR mode, setting target peak in
+        // SDR mode is very specific usecase, needs proper calibration, users
+        // can set it manually.
+        ret.hdr.max_luma = 0;
+        ret.hdr.max_cll = 0;
+        ret.hdr.max_fall = 0;
+    }
+
+    return ret;
+}
+
 static struct pl_color_space d3d11_target_color_space(struct ra_swapchain *sw)
 {
     if (sw->ctx->opts.composition)
-        return (struct pl_color_space){0};
-
+        return d3d11_composition_display_color_space(sw);
+    
     struct priv *p = sw->priv;
 
     DXGI_OUTPUT_DESC1 desc;
@@ -223,10 +289,19 @@ static struct pl_color_space d3d11_target_color_space(struct ra_swapchain *sw)
     return (struct pl_color_space){0};
 }
 
+static float
+d3d11_composition_sdr_white_level(struct ra_swapchain *sw)
+{
+    struct priv *p = sw->priv;
+    m_config_cache_update(p->opts_cache);
+
+    return p->opts->composition_sdr_white;
+}
+
 static float d3d11_target_ref_luma(struct ra_swapchain *sw)
 {
     if (sw->ctx->opts.composition)
-        return 0;
+        return d3d11_composition_sdr_white_level(sw);
 
     struct priv *p = sw->priv;
     return mp_dxgi_sdr_white_level_from_hwnd(&p->dxgi_ctx, vo_w32_hwnd(sw->ctx->vo));
