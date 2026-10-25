@@ -46,6 +46,10 @@
 #include "osdep/uwp/uwp-wasapi.h"
 #endif
 
+#if HAVE_UWP
+#define KSAUDIO_SPEAKER_DIRECTOUT 0
+#endif
+
 #ifdef _MSC_VER
 // Define some GUIDs that are defined only in C++ interfaces.
 DEFINE_GUID(KSDATAFORMAT_SPECIFIER_NONE,
