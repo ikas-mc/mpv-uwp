@@ -78,10 +78,6 @@ typedef HRESULT(WINAPI *PFN_CREATE_DXGI_FACTORY)(REFIID riid, void **ppFactory);
 #endif
 
 
-#if PL_API_VER < 362
-#define PL_COLOR_TRC_SCRGB PL_COLOR_TRC_LINEAR
-#endif
-
 #define D3D11_DXGI_ENUM(prefix, define) { case prefix ## define: return #define; }
 
 static const char *d3d11_get_format_name(DXGI_FORMAT fmt)
