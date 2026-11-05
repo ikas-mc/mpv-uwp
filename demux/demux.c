@@ -407,6 +407,7 @@ struct demux_stream {
     bool still_image;       // stream consists of multiple sparse still images
     bool refreshing;        // finding old position after track switches
     bool eof;               // end of demuxed stream? (true if no more packets)
+    struct mp_codec_params *staged_codec; // next sh->codec, see demux_update()
 
     bool global_correct_dts;// all observed so far
     bool global_correct_pos;
@@ -3430,7 +3431,14 @@ void demux_update(demuxer_t *demuxer, double pts)
         demuxer->num_editions = in->num_staged_editions;
         demuxer->edition = in->staged_edition;
     }
-    if (demuxer->events & (DEMUX_EVENT_METADATA | DEMUX_EVENT_STREAMS))
+    for (int n = 0; n < in->num_streams; n++) {
+        struct demux_stream *ds = in->streams[n]->ds;
+        if (ds->staged_codec) {
+            in->streams[n]->codec = ds->staged_codec;
+            ds->staged_codec = NULL;
+        }
+    }
+    if (demuxer->events & (DEMUX_EVENT_METADATA | DEMUX_EVENT_STREAMS | DEMUX_EVENT_CODEC))
         demux_update_replaygain(demuxer);
     if (demuxer->events & DEMUX_EVENT_DURATION)
         demuxer->duration = in->duration;
@@ -3534,7 +3542,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
     if (mp_cancel_test(sinfo->cancel))
         return NULL;
 
-    if (params && params->depth > 10) {
+    if (params->depth > 10) {
         mp_err(log, "Demuxer recursion depth exceeded.\n");
         return NULL;
     }
@@ -3571,7 +3579,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .opts_cache = opts_cache,
         .events = DEMUX_EVENT_INIT | DEMUX_EVENT_DURATION | DEMUX_EVENT_METADATA | DEMUX_EVENT_STREAMS,
         .duration = -1,
-        .depth = params ? params->depth : 0,
+        .depth = params->depth,
     };
 
     struct demux_internal *in = demuxer->in = talloc_ptrtype(demuxer, in);
@@ -3580,8 +3588,8 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .log = demuxer->log,
         .packet_pool = demux_packet_pool_get(global),
         .stats = stats_ctx_create(in, global, "demuxer"),
-        .can_cache = params && params->is_top_level,
-        .can_record = params && params->stream_record,
+        .can_cache = params->is_top_level,
+        .can_record = params->stream_record,
         .d_thread = talloc(demuxer, struct demuxer),
         .d_user = demuxer,
         .after_seek = true, // (assumed identical to initial demuxer state)
@@ -3623,14 +3631,14 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         in->events = DEMUX_EVENT_INIT | DEMUX_EVENT_DURATION | DEMUX_EVENT_METADATA | DEMUX_EVENT_STREAMS;
 
         struct demuxer *sub = NULL;
-        if (!(params && params->disable_timeline)) {
+        if (!params->disable_timeline) {
             struct timeline *tl = timeline_load(global, log, demuxer);
             if (tl) {
                 struct demuxer_params params2 = {0};
                 params2.timeline = tl;
-                params2.is_top_level = params && params->is_top_level;
-                params2.stream_record = params && params->stream_record;
-                params2.depth = params ? params->depth + 1 : 0;
+                params2.is_top_level = params->is_top_level;
+                params2.stream_record = params->stream_record;
+                params2.depth = params->depth + 1;
                 sub =
                     open_given_type(global, log, &demuxer_desc_timeline,
                                     NULL, sinfo, &params2, DEMUX_CHECK_FORCE);
@@ -3662,7 +3670,6 @@ static const int d_normal[]  = {DEMUX_CHECK_NORMAL, DEMUX_CHECK_UNSAFE, -1};
 static const int d_request[] = {DEMUX_CHECK_REQUEST, -1};
 static const int d_force[]   = {DEMUX_CHECK_FORCE, -1};
 
-// params can be NULL
 // This may free the stream parameter on success.
 static struct demuxer *demux_open(struct stream *stream,
                                   struct mp_cancel *cancel,
@@ -3673,7 +3680,7 @@ static struct demuxer *demux_open(struct stream *stream,
     const struct demuxer_desc *check_desc = NULL;
     struct mp_log *log = mp_log_new(NULL, global->log, "!demux");
     struct demuxer *demuxer = NULL;
-    char *force_format = params ? params->force_format : NULL;
+    char *force_format = params->force_format;
 
     struct parent_stream_info sinfo = {
         .seekable = stream->seekable,
@@ -4343,6 +4350,20 @@ void demux_set_stream_group(struct demuxer *demuxer,
         struct sh_stream *m = group->members[i];
         select_dependent_tracks(in, m, MP_NOPTS_VALUE, m->ds->selected);
     }
+    mp_mutex_unlock(&in->lock);
+}
+
+// Replace the codec params of a stream that was already added.
+void demux_set_stream_codec(struct demuxer *demuxer, struct sh_stream *sh,
+                            struct mp_codec_params *codec)
+{
+    struct demux_internal *in = demuxer->in;
+    mp_assert(demuxer == in->d_thread);
+    mp_assert(sh->ds); // stream must have been added
+
+    mp_mutex_lock(&in->lock);
+    sh->ds->staged_codec = codec;
+    in->events |= DEMUX_EVENT_CODEC;
     mp_mutex_unlock(&in->lock);
 }
 

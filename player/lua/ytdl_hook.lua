@@ -413,7 +413,7 @@ local function edl_track_joined(fragments, protocol, is_live, base)
         table.insert(parts, edl_escape(join_url(base, fragment)))
         if fragment.duration then
             parts[#parts] =
-                parts[#parts] .. ",length="..fragment.duration
+                parts[#parts] .. ",length="..edl_escape(fragment.duration)
         end
     end
     return edl .. table.concat(parts, ";") .. ";"
@@ -765,7 +765,7 @@ local function add_single_video(json)
                 msg.verbose("Skipping subtitle ["..lang.."] with protocol "..
                             sub_info.protocol)
             elseif sub_info.data ~= nil then
-                sub = "memory://"..sub_info.data
+                sub = "data://text/plain,"..sub_info.data
             elseif sub_info.url ~= nil and
                 url_is_safe(sub_info.url) then
                 sub = sub_info.url
@@ -795,7 +795,7 @@ local function add_single_video(json)
 
         for i = #json.thumbnails, 1, -1 do
             local thumb_info = json.thumbnails[i]
-            if thumb_info.url ~= nil then
+            if thumb_info.url ~= nil and url_is_safe(thumb_info.url) then
                 if o.thumbnails == 'all' then
                     msg.verbose("adding thumbnail")
                     mp.commandv("video-add", thumb_info.url, "auto")
@@ -1125,7 +1125,7 @@ local function run_ytdl_hook(url)
                             else
                                 subfile = subfile..edl_escape("memory://WEBVTT")
                             end
-                            subfile = subfile..",length="..entry.duration..";"
+                            subfile = subfile..",length="..edl_escape(entry.duration)..";"
                         end
                         msg.debug(j.." sub EDL: "..subfile)
                         mp.commandv("sub-add", subfile, "auto", req.ext, j)
@@ -1143,11 +1143,6 @@ local function run_ytdl_hook(url)
                 local site = entry.url
                 local title = entry.title
 
-                if title ~= nil then
-                    title = string.gsub(title, '%s+', ' ')
-                    table.insert(playlist, "#EXTINF:0," .. title)
-                end
-
                 --[[ some extractors will still return the full info for
                      all clips in the playlist and the URL will point
                      directly to the file in that case, which we don't
@@ -1164,6 +1159,9 @@ local function run_ytdl_hook(url)
                 -- links without protocol as returned by --flat-playlist
                 if not site then
                     msg.error("Playlist entry does not have unique URL, can't add it.")
+                elseif site:find("%c") then
+                    -- a line break would add entries to the playlist
+                    msg.error("Playlist entry URL contains control characters, can't add it.")
                 elseif not site:find("://") then
                     -- youtube extractor provides only IDs,
                     -- others come prefixed with the extractor name and ":"
@@ -1175,6 +1173,10 @@ local function run_ytdl_hook(url)
                 end
 
                 if playlist_url then
+                    if title ~= nil then
+                        title = string.gsub(title, '%s+', ' ')
+                        table.insert(playlist, "#EXTINF:0," .. title)
+                    end
                     table.insert(playlist, playlist_url)
                     -- save the cookies in a table for the playlist hook
                     playlist_cookies[playlist_url] = entry.cookies or json.cookies

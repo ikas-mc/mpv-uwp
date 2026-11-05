@@ -2306,7 +2306,8 @@ static int mp_property_list_tracks(void *ctx, struct m_property *prop,
                 res = append_track_info(res, track);
                 spacing = 1;
             }
-            spacing = 2;
+            if (spacing)
+                spacing = 2;
         }
 
         struct demuxer *demuxer = mpctx->demuxer;
@@ -5507,11 +5508,13 @@ fread_pic(FILE *fp, mp_image_t *dst, size_t bytesPerLine, size_t h, size_t strid
     size_t bytesRead = 0, expectedBytes = h * bytesPerLine;
     size_t src_off = offset, dst_off = 0;
     if (stride == dst->stride[0]) {
-        fseek(fp, src_off, SEEK_SET);
+        if (fseek(fp, src_off, SEEK_SET))
+            return false;
         bytesRead = fread(dst->planes[0], 1, expectedBytes, fp);
     } else {
         for (int i = 0; i < h; i++) {
-            fseek(fp, src_off, SEEK_SET);
+            if (fseek(fp, src_off, SEEK_SET))
+                break;
             size_t r = fread(dst->planes[0] + dst_off, 1, bytesPerLine, fp);
             if (r != bytesPerLine)
                 break;
@@ -7329,7 +7332,7 @@ static void cmd_key(void *p)
     int action = *(int *)cmd->priv;
 
     const char *key_name = cmd->args[0].v.s;
-    if (key_name[0] == '\0' && action == MP_KEY_STATE_UP) {
+    if ((!key_name || key_name[0] == '\0') && action == MP_KEY_STATE_UP) {
         mp_input_put_key_artificial(mpctx->input, MP_INPUT_RELEASE_ALL, 1);
     } else {
         int code = mp_input_get_key_from_name(key_name);
