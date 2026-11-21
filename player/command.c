@@ -4955,7 +4955,7 @@ static const char *const *const mp_event_property_change[] = {
       "percent-pos", "time-remaining", "playtime-remaining", "playback-time",
       "estimated-vf-fps", "total-avsync-change", "audio-speed-correction",
       "video-speed-correction", "vo-delayed-frame-count", "mistimed-frame-count",
-      "vo-presentation-delay", "vsync-ratio", "estimated-display-fps",
+      "vsync-ratio", "estimated-display-fps",
       "vsync-jitter", "sub-text",
       "secondary-sub-text", "audio-bitrate", "video-bitrate", "sub-bitrate",
       "decoder-frame-drop-count", "frame-drop-count", "video-frame-info",
@@ -4987,6 +4987,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MP_EVENT_WIN_STATE2, "display-hidpi-scale"),
     E(MP_EVENT_FOCUS, "focused"),
     E(MP_EVENT_AMBIENT_LIGHTING_CHANGED, "ambient-light"),
+    E(MP_EVENT_PRESENTATION_DELAY, "vo-presentation-delay"),
     E(MP_EVENT_CHANGE_PLAYLIST, "playlist", "playlist-pos", "playlist-pos-1",
       "playlist-count", "playlist/count", "playlist-current-pos",
       "playlist-playing-pos"),
@@ -8683,7 +8684,9 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
 
     if (opt_ptr == &opts->audio_delay) {
         if (mpctx->ao_chain) {
-            mpctx->delay += mpctx->opts->audio_delay - mpctx->ao_chain->delay;
+            double change = mpctx->opts->audio_delay - mpctx->ao_chain->delay;
+            mpctx->delay += change;
+            mpctx->ao_chain->delayed_start_gap += change;
             mpctx->ao_chain->delay = mpctx->opts->audio_delay;
         }
         mp_wakeup_core(mpctx);
