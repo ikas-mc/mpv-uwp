@@ -269,6 +269,7 @@ sources = files(
     'video/out/placebo/utils.c',
     'video/out/vo_gpu_next.c',
     'video/out/gpu_next/context.c',
+    'video/out/gpu_next/libmpv_gpu_next.c',
     'video/out/gpu_next/video.c',
 
     ## osdep
@@ -1643,6 +1644,7 @@ if features['cocoa'] and features['swift']
                            'osdep/mac/event_helper.swift',
                            'osdep/mac/input_helper.swift',
                            'osdep/mac/log_helper.swift',
+                           'osdep/mac/menu.swift',
                            'osdep/mac/menu_bar.swift',
                            'osdep/mac/option_helper.swift',
                            'osdep/mac/precise_timer.swift',
@@ -1651,6 +1653,7 @@ if features['cocoa'] and features['swift']
                            'osdep/mac/swift_extensions.swift',
                            'osdep/mac/type_helper.swift',
                            'video/out/mac/common.swift',
+                           'video/out/mac/menu_context.swift',
                            'video/out/mac/title_bar.swift',
                            'video/out/mac/view.swift',
                            'video/out/mac/window.swift')
