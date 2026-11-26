@@ -31,7 +31,7 @@
 #include "misc/io_utils.h"
 #include "osdep/io.h"
 
-int mp_mkostemps(char *template, int suffixlen, int flags)
+static int mp_mkostemps_mode(char *template, int suffixlen, int flags, mode_t mode)
 {
     size_t len = strlen(template);
     char *t = len >= 6 + suffixlen ? &template[len - (6 + suffixlen)] : NULL;
@@ -49,7 +49,7 @@ int mp_mkostemps(char *template, int suffixlen, int flags)
         mp_tprintf_buf(crap, sizeof(crap), "%06zx", fuckmess);
         memcpy(t, crap, 6);
 
-        int res = open(template, O_RDWR | O_CREAT | O_EXCL | flags, 0600);
+        int res = open(template, O_RDWR | O_CREAT | O_EXCL | flags, mode);
         if (res >= 0 || errno != EEXIST)
             return res;
     }
@@ -58,13 +58,18 @@ int mp_mkostemps(char *template, int suffixlen, int flags)
     return -1;
 }
 
+int mp_mkostemps(char *template, int suffixlen, int flags)
+{
+    return mp_mkostemps_mode(template, suffixlen, flags, 0600);
+}
+
 bool mp_save_to_file(const char *filepath, const void *data, size_t size)
 {
     mp_assert(filepath);
 
     bool result = false;
     char *tmp = talloc_asprintf(NULL, "%sXXXXXX", filepath);
-    int fd = mp_mkostemps(tmp, 0, O_CLOEXEC);
+    int fd = mp_mkostemps_mode(tmp, 0, O_CLOEXEC, 0666);
     if (fd < 0)
         goto done;
     FILE *fs = fdopen(fd, "wb");
